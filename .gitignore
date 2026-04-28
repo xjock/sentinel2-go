@@ -1,0 +1,19 @@
+# Binaries
+sentinel2-go
+*.exe
+
+# Downloaded data
+sentinel2_data/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Go
+vendor/
