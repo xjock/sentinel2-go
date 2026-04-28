@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -44,12 +45,36 @@ type Asset struct {
 	Roles []string `json:"roles"`
 }
 
+type Config struct {
+	BBox      []float64 `json:"bbox"`
+	StartDate string    `json:"start_date"`
+	EndDate   string    `json:"end_date"`
+	MaxCloud  float64   `json:"max_cloud"`
+	Bands     []string  `json:"bands"`
+	Limit     int       `json:"limit"`
+}
+
 type SearchOptions struct {
 	Bbox      []float64
 	StartDate string
 	EndDate   string
 	Limit     int
 	MaxCloud  float64
+}
+
+func LoadConfig(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read config file: %w", err)
+	}
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parse config file: %w", err)
+	}
+	if cfg.Limit == 0 {
+		cfg.Limit = 20
+	}
+	return &cfg, nil
 }
 
 func SearchItems(opts SearchOptions) (*STACItemCollection, error) {
@@ -152,25 +177,31 @@ func PrintItemSummary(items []STACItem) {
 }
 
 func main() {
-	bbox := []float64{116.2, 39.8, 116.6, 40.0}
-	startDate := "2025-01-01"
-	endDate := "2025-01-15"
-	maxCloud := 20.0
-	bandsToDownload := []string{"red", "green", "blue", "nir"}
-	destDir := "./sentinel2_data"
+	configPath := flag.String("config", "config.json", "Path to configuration JSON file")
+	destDir := flag.String("dest", "./sentinel2_data", "Destination directory for downloaded files")
+	flag.Parse()
+
+	cfg, err := LoadConfig(*configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
+		os.Exit(1)
+	}
 
 	opts := SearchOptions{
-		Bbox:      bbox,
-		StartDate: startDate,
-		EndDate:   endDate,
-		Limit:     20,
-		MaxCloud:  maxCloud,
+		Bbox:      cfg.BBox,
+		StartDate: cfg.StartDate,
+		EndDate:   cfg.EndDate,
+		Limit:     cfg.Limit,
+		MaxCloud:  cfg.MaxCloud,
 	}
 
 	fmt.Printf("Searching Sentinel-2 L2A data...\n")
-	fmt.Printf("  BBox: %v (west, south, east, north)\n", opts.Bbox)
-	fmt.Printf("  Date: %s to %s\n", opts.StartDate, opts.EndDate)
-	fmt.Printf("  Max Cloud: %.0f%%\n\n", opts.MaxCloud)
+	fmt.Printf("  Config: %s\n", *configPath)
+	fmt.Printf("  Dest:   %s\n", *destDir)
+	fmt.Printf("  BBox:   %v (west, south, east, north)\n", opts.Bbox)
+	fmt.Printf("  Date:   %s to %s\n", opts.StartDate, opts.EndDate)
+	fmt.Printf("  Cloud:  <= %.0f%%\n", opts.MaxCloud)
+	fmt.Printf("  Bands:  %v\n\n", cfg.Bands)
 
 	collection, err := SearchItems(opts)
 	if err != nil {
@@ -189,13 +220,13 @@ func main() {
 	fmt.Println("\n=== Downloading Bands ===")
 	for _, item := range items {
 		fmt.Printf("\nItem: %s\n", item.ID)
-		for _, band := range bandsToDownload {
+		for _, band := range cfg.Bands {
 			asset, ok := item.Assets[band]
 			if !ok {
 				fmt.Printf("  [warn] band '%s' not available\n", band)
 				continue
 			}
-			path, err := DownloadAsset(asset, destDir, item.ID, band)
+			path, err := DownloadAsset(asset, *destDir, item.ID, band)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "  [error] %s: %v\n", band, err)
 				continue

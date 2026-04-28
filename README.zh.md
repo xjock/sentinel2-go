@@ -9,6 +9,8 @@
 - 下载单波段 Cloud Optimized GeoTIFF (COG) 文件
 - 自动跳过已下载文件
 - 纯 Go 实现，零外部依赖
+- JSON 配置文件驱动
+- 命令行参数指定输出目录
 
 ## 环境要求
 
@@ -19,28 +21,62 @@
 ```bash
 git clone <你的仓库地址>
 cd sentinel2-go
-go run main.go
+
+# 编辑 config.json 设置你的查询区域和日期
+go run main.go -config config.json -dest ./sentinel2_data
 ```
 
 程序会：
-1. 根据配置的边界框和日期范围搜索 Sentinel-2 L2A 数据
-2. 按云量过滤结果
-3. 将请求的波段下载到 `./sentinel2_data/` 目录
+1. 从 `config.json` 加载查询参数
+2. 根据配置的边界框和日期范围搜索 Sentinel-2 L2A 数据
+3. 按云量过滤结果
+4. 将请求的波段下载到指定目录
 
 ## 配置
 
-编辑 `main.go`，修改 `main()` 函数开头的变量：
+创建 `config.json` 文件（参考 `config.json`）：
 
-```go
-bbox := []float64{116.2, 39.8, 116.6, 40.0}   // 西, 南, 东, 北
-startDate := "2025-01-01"
-endDate   := "2025-01-15"
-maxCloud  := 20.0                               // 最大云量 %
-bandsToDownload := []string{"red", "green", "blue", "nir"}
-destDir := "./sentinel2_data"
+```json
+{
+  "bbox": [116.2, 39.8, 116.6, 40.0],
+  "start_date": "2025-01-01",
+  "end_date": "2025-01-15",
+  "max_cloud": 20.0,
+  "bands": ["red", "green", "blue", "nir"],
+  "limit": 20
+}
 ```
 
-### 边界框获取方式
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `bbox` | `[float64]` | 边界框 `[西, 南, 东, 北]` |
+| `start_date` | `string` | 起始日期 `YYYY-MM-DD` |
+| `end_date` | `string` | 结束日期 `YYYY-MM-DD` |
+| `max_cloud` | `float64` | 最大云量百分比 (0-100) |
+| `bands` | `[string]` | 要下载的波段列表 |
+| `limit` | `int` | 最大查询 STAC 条目数（默认 20） |
+
+### 命令行参数
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `-config` | `config.json` | 配置文件路径 |
+| `-dest` | `./sentinel2_data` | 下载文件保存目录 |
+
+### 使用示例
+
+```bash
+# 使用默认配置文件和默认输出目录
+go run main.go
+
+# 使用自定义配置和输出目录
+go run main.go -config beijing.json -dest /data/s2_beijing
+
+# 运行编译后的二进制文件
+./sentinel2-go -config europe.json -dest ./europe_s2
+```
+
+### 获取边界框
 
 - [geojson.io](http://geojson.io/) 画一个矩形，右下角显示坐标
 - Python: `from shapely import box; list(box(minx, miny, maxx, maxy).bounds)`
@@ -66,18 +102,18 @@ destDir := "./sentinel2_data"
 ## 编译
 
 ```bash
-# 编译二进制
+# 编译二进制文件
 go build -o sentinel2-go main.go
 
 # 运行
-./sentinel2-go
+./sentinel2-go -config config.json -dest ./output
 ```
 
 ## Docker
 
 ```bash
 docker build -t sentinel2-go .
-docker run --rm -v $(pwd)/sentinel2_data:/app/sentinel2_data sentinel2-go
+docker run --rm -v $(pwd)/config.json:/app/config.json -v $(pwd)/sentinel2_data:/app/sentinel2_data sentinel2-go
 ```
 
 ## 输出
@@ -99,6 +135,7 @@ sentinel2_data/
 sentinel2-go/
 ├── main.go                   # Go 主程序
 ├── go.mod                    # Go 模块
+├── config.json               # 查询配置示例
 ├── README.md                 # 英文文档
 ├── README.zh.md              # 中文文档（本文件）
 ├── Dockerfile                # Docker 镜像
@@ -116,7 +153,7 @@ sentinel2-go/
 **Q: 没有返回数据？**
 - 检查日期范围是否在有效时间内（Earth Search 一般保留最近几年数据）
 - 检查 bbox 是否在陆地范围内
-- 尝试调高 `maxCloud` 或去掉云量过滤
+- 尝试调高 `max_cloud` 或去掉云量过滤
 
 **Q: 需要在 Go 中读取像素值而不是下载文件？**
 - 本程序只负责"抓取"（下载）
