@@ -7,7 +7,10 @@ sentinel2-go
 # Downloaded data
 sentinel2_data/
 sentinel2_test_data/
+sentinel2_stretch_test/
 
+# GDAL bundled data
+share/
 
 # OS files
 .DS_Store

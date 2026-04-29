@@ -21,7 +21,25 @@
       "Bash(curl --ssl-no-revoke -s \"https://earth-search.aws.element84.com/v1/search?collections=sentinel-2-l2a&bbox=116.2,39.8,116.6,40.0&datetime=2025-01-13T00:00:00Z/2025-01-13T23:59:59Z&limit=1\")",
       "Read(//tmp/**)",
       "Bash(D:/Dev/maps/sentinel2-go/sentinel2-go-test.exe *)",
-      "Bash(./sentinel2-go *)"
+      "Bash(./sentinel2-go *)",
+      "Bash(where gdalbuildvrt *)",
+      "Bash(find /c -name \"gdalbuildvrt.exe\")",
+      "Bash(find /d -name \"gdalbuildvrt.exe\")",
+      "Bash(objdump -p /d/Dev/toolchain/gdal353_msvc142_x64_v3/bin/gdalbuildvrt.exe)",
+      "Bash(objdump -p /d/Dev/toolchain/gdal353_msvc142_x64_v3/bin/gdal_translate.exe)",
+      "Bash(ldd /d/Dev/toolchain/gdal353_msvc142_x64_v3/bin/gdalbuildvrt.exe)",
+      "Bash(ldd /d/Dev/toolchain/gdal353_msvc142_x64_v3/bin/gdal_translate.exe)",
+      "Bash(ldd /d/Dev/toolchain/gdal353_msvc142_x64_v3/bin/gdal305.dll)",
+      "Bash(./gdalinfo sentinel2_test_data/S2A_50TMK_20250113_0_L2A_RGB.tif)",
+      "Bash(/d/Dev/toolchain/gdal353_msvc142_x64_v3/bin/gdalinfo.exe sentinel2_test_data/S2A_50TMK_20250113_0_L2A_RGB.tif)",
+      "Bash(/d/Dev/toolchain/gdal353_msvc142_x64_v3/bin/gdalinfo.exe -mm sentinel2_test_data/S2A_50TMK_20250113_0_L2A_RGB.tif)",
+      "Bash(/d/Dev/toolchain/gdal353_msvc142_x64_v3/bin/gdal_contrast_stretch.exe --help)",
+      "Bash(rm -f sentinel2_test_data/*_RGB.tif sentinel2_test_data/*_rgb.vrt)",
+      "Bash(/d/Dev/toolchain/gdal353_msvc142_x64_v3/bin/gdalbuildvrt.exe -separate sentinel2_test_data/test_rgb.vrt sentinel2_test_data/S2A_50TMK_20250113_0_L2A_red.tif sentinel2_test_data/S2A_50TMK_20250113_0_L2A_green.tif sentinel2_test_data/S2A_50TMK_20250113_0_L2A_blue.tif)",
+      "Bash(/d/Dev/toolchain/gdal353_msvc142_x64_v3/bin/gdal_contrast_stretch.exe -percentile-range 0.02 0.98 sentinel2_test_data/test_rgb.vrt sentinel2_test_data/test_rgb_2pct.tif)",
+      "Bash(/d/Dev/toolchain/gdal353_msvc142_x64_v3/bin/gdalinfo.exe sentinel2_test_data/test_rgb_2pct.tif)",
+      "Bash(ldd /d/Dev/toolchain/gdal353_msvc142_x64_v3/bin/gdal_contrast_stretch.exe)",
+      "Bash(/d/Dev/toolchain/gdal353_msvc142_x64_v3/bin/gdalinfo.exe -mm sentinel2_stretch_test/S2A_50TMK_20250113_0_L2A_RGB.tif)"
     ]
   }
 }

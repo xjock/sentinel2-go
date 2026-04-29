@@ -216,6 +216,24 @@ func PrintItemSummary(items []STACItem) {
 	}
 }
 
+func findGDALTool(name string) string {
+	exeName := name + ".exe"
+	if _, err := os.Stat(exeName); err == nil {
+		absPath, _ := filepath.Abs(exeName)
+		return absPath
+	}
+	return name
+}
+
+func gdalEnv() []string {
+	env := os.Environ()
+	if _, err := os.Stat("share/proj"); err == nil {
+		projDir, _ := filepath.Abs("share/proj")
+		env = append(env, "PROJ_DATA="+projDir)
+	}
+	return env
+}
+
 func BuildRGB(destDir string, itemID string) error {
 	bands := []string{"red", "green", "blue"}
 	bandPaths := []string{}
@@ -236,19 +254,21 @@ func BuildRGB(destDir string, itemID string) error {
 
 	vrtPath := filepath.Join(destDir, fmt.Sprintf("%s_rgb.vrt", itemID))
 
-	buildCmd := exec.Command("gdalbuildvrt", append([]string{"-separate", vrtPath}, bandPaths...)...)
+	buildCmd := exec.Command(findGDALTool("gdalbuildvrt"), append([]string{"-separate", vrtPath}, bandPaths...)...)
 	buildCmd.Stdout = os.Stdout
 	buildCmd.Stderr = os.Stderr
+	buildCmd.Env = gdalEnv()
 	if err := buildCmd.Run(); err != nil {
 		return fmt.Errorf("gdalbuildvrt failed: %w", err)
 	}
 	defer os.Remove(vrtPath)
 
-	transCmd := exec.Command("gdal_translate", "-of", "GTiff", vrtPath, rgbPath)
-	transCmd.Stdout = os.Stdout
-	transCmd.Stderr = os.Stderr
-	if err := transCmd.Run(); err != nil {
-		return fmt.Errorf("gdal_translate failed: %w", err)
+	stretchCmd := exec.Command(findGDALTool("gdal_contrast_stretch"), "-percentile-range", "0.02", "0.98", vrtPath, rgbPath)
+	stretchCmd.Stdout = os.Stdout
+	stretchCmd.Stderr = os.Stderr
+	stretchCmd.Env = gdalEnv()
+	if err := stretchCmd.Run(); err != nil {
+		return fmt.Errorf("gdal_contrast_stretch failed: %w", err)
 	}
 
 	fmt.Printf("  [rgb] %s\n", rgbPath)
