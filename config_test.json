@@ -1,0 +1,8 @@
+{
+  "bbox": [116.2, 39.8, 116.6, 40.0],
+  "start_date": "2025-01-01",
+  "end_date": "2025-01-15",
+  "max_cloud": 20.0,
+  "bands": ["red", "green", "blue"],
+  "limit": 1
+}

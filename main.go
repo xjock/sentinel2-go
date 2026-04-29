@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 	"time"
@@ -215,6 +216,45 @@ func PrintItemSummary(items []STACItem) {
 	}
 }
 
+func BuildRGB(destDir string, itemID string) error {
+	bands := []string{"red", "green", "blue"}
+	bandPaths := []string{}
+	for _, band := range bands {
+		p := filepath.Join(destDir, fmt.Sprintf("%s_%s.tif", itemID, band))
+		if _, err := os.Stat(p); err != nil {
+			return fmt.Errorf("missing band %s: %w", band, err)
+		}
+		bandPaths = append(bandPaths, p)
+	}
+
+	rgbName := fmt.Sprintf("%s_RGB.tif", itemID)
+	rgbPath := filepath.Join(destDir, rgbName)
+	if _, err := os.Stat(rgbPath); err == nil {
+		fmt.Printf("  [skip] %s already exists\n", rgbName)
+		return nil
+	}
+
+	vrtPath := filepath.Join(destDir, fmt.Sprintf("%s_rgb.vrt", itemID))
+
+	buildCmd := exec.Command("gdalbuildvrt", append([]string{"-separate", vrtPath}, bandPaths...)...)
+	buildCmd.Stdout = os.Stdout
+	buildCmd.Stderr = os.Stderr
+	if err := buildCmd.Run(); err != nil {
+		return fmt.Errorf("gdalbuildvrt failed: %w", err)
+	}
+	defer os.Remove(vrtPath)
+
+	transCmd := exec.Command("gdal_translate", "-of", "GTiff", vrtPath, rgbPath)
+	transCmd.Stdout = os.Stdout
+	transCmd.Stderr = os.Stderr
+	if err := transCmd.Run(); err != nil {
+		return fmt.Errorf("gdal_translate failed: %w", err)
+	}
+
+	fmt.Printf("  [rgb] %s\n", rgbPath)
+	return nil
+}
+
 func main() {
 	configPath := flag.String("config", "config.json", "Path to configuration JSON file")
 	destDir := flag.String("dest", "./sentinel2_data", "Destination directory for downloaded files")
@@ -286,6 +326,9 @@ func main() {
 			}
 			tasks <- downloadTask{itemID: item.ID, band: band, asset: asset, destDir: *destDir}
 			total++
+		}
+		if err := BuildRGB(*destDir, item.ID); err != nil {
+			fmt.Fprintf(os.Stderr, "  [rgb skip] %v\n", err)
 		}
 	}
 	close(tasks)
