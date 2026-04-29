@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -160,47 +162,166 @@ func assetExists(destDir, itemID, bandName string) bool {
 	return err == nil
 }
 
-func DownloadAsset(asset Asset, destDir string, itemID string, bandName string) (string, error) {
+type progressReader struct {
+	r           io.Reader
+	total       int64
+	current     int64
+	lastPercent int
+	label       string
+}
+
+func (pr *progressReader) Read(p []byte) (int, error) {
+	n, err := pr.r.Read(p)
+	pr.current += int64(n)
+	if pr.total > 0 {
+		percent := int(pr.current * 100 / pr.total)
+		if percent >= pr.lastPercent+10 {
+			fmt.Fprintf(os.Stderr, "  [%s] %3d%% (%s / %s)\n", pr.label, percent, formatBytes(pr.current), formatBytes(pr.total))
+			pr.lastPercent = percent
+		}
+	} else {
+		// 未知总大小时，每 10 MB 打印一次
+		if pr.current >= int64(pr.lastPercent)*10*1024*1024 {
+			fmt.Fprintf(os.Stderr, "  [%s] downloaded %s\n", pr.label, formatBytes(pr.current))
+			pr.lastPercent++
+		}
+	}
+	return n, err
+}
+
+func formatBytes(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
+func parseContentRangeTotal(contentRange string) int64 {
+	idx := strings.LastIndex(contentRange, "/")
+	if idx < 0 {
+		return 0
+	}
+	total, _ := strconv.ParseInt(contentRange[idx+1:], 10, 64)
+	return total
+}
+
+func DownloadAsset(asset Asset, destDir string, itemID string, bandName string) (string, bool, error) {
 	if err := os.MkdirAll(destDir, 0755); err != nil {
-		return "", fmt.Errorf("mkdir %s: %w", destDir, err)
+		return "", false, fmt.Errorf("mkdir %s: %w", destDir, err)
 	}
 
 	filename := fmt.Sprintf("%s_%s.tif", itemID, bandName)
 	destPath := filepath.Join(destDir, filename)
 
+	var offset int64
+	if info, err := os.Stat(destPath); err == nil {
+		offset = info.Size()
+	}
+
 	client := &http.Client{Timeout: DownloadTimeout}
-	resp, err := client.Get(asset.Href)
+	req, err := http.NewRequest("GET", asset.Href, nil)
 	if err != nil {
-		return "", fmt.Errorf("download failed: %w", err)
+		return "", false, fmt.Errorf("create request: %w", err)
+	}
+	if offset > 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", false, fmt.Errorf("download failed: %w", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("HTTP %d for %s", resp.StatusCode, asset.Href)
-	}
+	switch resp.StatusCode {
+	case http.StatusOK:
+		total := resp.ContentLength
+		if offset > 0 {
+			if total > 0 && offset == total {
+				resp.Body.Close()
+				return destPath, true, nil
+			}
+			os.Remove(destPath)
+			offset = 0
+		}
+		f, err := os.Create(destPath)
+		if err != nil {
+			return "", false, fmt.Errorf("create file: %w", err)
+		}
+		defer f.Close()
 
-	f, err := os.Create(destPath)
-	if err != nil {
-		return "", fmt.Errorf("create file: %w", err)
-	}
-	defer f.Close()
+		pr := &progressReader{r: resp.Body, total: total, current: 0, label: fmt.Sprintf("%s/%s", itemID, bandName)}
+		if total > 0 {
+			fmt.Fprintf(os.Stderr, "  [downloading] %s (%s)\n", filename, formatBytes(total))
+		} else {
+			fmt.Fprintf(os.Stderr, "  [downloading] %s (unknown size)\n", filename)
+		}
 
-	_, err = io.Copy(f, resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("write file: %w", err)
+		_, err = io.Copy(f, pr)
+		if err != nil {
+			os.Remove(destPath)
+			return "", false, fmt.Errorf("write file: %w", err)
+		}
+		if total > 0 {
+			info, err := os.Stat(destPath)
+			if err != nil {
+				os.Remove(destPath)
+				return "", false, fmt.Errorf("stat file: %w", err)
+			}
+			if info.Size() != total {
+				os.Remove(destPath)
+				return "", false, fmt.Errorf("size mismatch: got %s, expected %s", formatBytes(info.Size()), formatBytes(total))
+			}
+		}
+		return destPath, false, nil
+
+	case http.StatusPartialContent:
+		total := parseContentRangeTotal(resp.Header.Get("Content-Range"))
+		if total == 0 {
+			total = offset + resp.ContentLength
+		}
+		f, err := os.OpenFile(destPath, os.O_APPEND|os.O_WRONLY, 0644)
+		if err != nil {
+			return "", false, fmt.Errorf("open file for append: %w", err)
+		}
+		defer f.Close()
+
+		pr := &progressReader{r: resp.Body, total: total, current: offset, label: fmt.Sprintf("%s/%s", itemID, bandName)}
+		fmt.Fprintf(os.Stderr, "  [resuming] %s (%s / %s, %s remaining)\n", filename, formatBytes(offset), formatBytes(total), formatBytes(total-offset))
+
+		_, err = io.Copy(f, pr)
+		if err != nil {
+			return "", false, fmt.Errorf("write file: %w", err)
+		}
+		info, err := os.Stat(destPath)
+		if err != nil {
+			os.Remove(destPath)
+			return "", false, fmt.Errorf("stat file: %w", err)
+		}
+		if info.Size() != total {
+			os.Remove(destPath)
+			return "", false, fmt.Errorf("size mismatch: got %s, expected %s", formatBytes(info.Size()), formatBytes(total))
+		}
+		return destPath, false, nil
+
+	case http.StatusRequestedRangeNotSatisfiable:
+		return destPath, true, nil
+
+	default:
+		return "", false, fmt.Errorf("HTTP %d for %s", resp.StatusCode, asset.Href)
 	}
-	return destPath, nil
 }
 
 func downloadWorker(tasks <-chan downloadTask, results chan<- downloadResult) {
 	for task := range tasks {
-		if assetExists(task.destDir, task.itemID, task.band) {
-			path := filepath.Join(task.destDir, fmt.Sprintf("%s_%s.tif", task.itemID, task.band))
-			results <- downloadResult{path: path, skipped: true, task: task}
-			continue
-		}
-		path, err := DownloadAsset(task.asset, task.destDir, task.itemID, task.band)
-		results <- downloadResult{path: path, err: err, task: task}
+		path, skipped, err := DownloadAsset(task.asset, task.destDir, task.itemID, task.band)
+		results <- downloadResult{path: path, skipped: skipped, err: err, task: task}
 	}
 }
 
@@ -219,8 +340,11 @@ func PrintItemSummary(items []STACItem) {
 func findGDALTool(name string) string {
 	exeName := name + ".exe"
 	if _, err := os.Stat(exeName); err == nil {
-		absPath, _ := filepath.Abs(exeName)
-		return absPath
+		// 检查关键 DLL 是否也在当前目录，防止用户只拷贝了 exe 导致 0xc0000135
+		if _, err := os.Stat("gdal305.dll"); err == nil {
+			absPath, _ := filepath.Abs(exeName)
+			return absPath
+		}
 	}
 	return name
 }
@@ -347,9 +471,6 @@ func main() {
 			tasks <- downloadTask{itemID: item.ID, band: band, asset: asset, destDir: *destDir}
 			total++
 		}
-		if err := BuildRGB(*destDir, item.ID); err != nil {
-			fmt.Fprintf(os.Stderr, "  [rgb skip] %v\n", err)
-		}
 	}
 	close(tasks)
 
@@ -364,6 +485,13 @@ func main() {
 			failed++
 		} else {
 			fmt.Printf("  [saved] %s\n", filepath.Base(res.path))
+		}
+	}
+
+	fmt.Println("\n=== Building RGB ===")
+	for _, item := range items {
+		if err := BuildRGB(*destDir, item.ID); err != nil {
+			fmt.Fprintf(os.Stderr, "  [rgb skip] %s: %v\n", item.ID, err)
 		}
 	}
 

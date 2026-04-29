@@ -1,7 +1,9 @@
 # Binaries
 sentinel2-go
 *.exe
+*.exe~
 *.dll
+*.rar
 
 
 # Downloaded data
@@ -11,6 +13,8 @@ sentinel2_stretch_test/
 
 # GDAL bundled data
 share/
+*.tif
+
 
 # OS files
 .DS_Store

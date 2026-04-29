@@ -195,7 +195,7 @@ func TestDownloadAsset_Success(t *testing.T) {
 	defer srv.Close()
 
 	asset := Asset{Href: srv.URL + "/test.tif"}
-	path, err := DownloadAsset(asset, tmpDir, "S2A_TEST", "red")
+	path, _, err := DownloadAsset(asset, tmpDir, "S2A_TEST", "red")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestDownloadAsset_HTTPError(t *testing.T) {
 	defer srv.Close()
 
 	asset := Asset{Href: srv.URL + "/missing.tif"}
-	_, err := DownloadAsset(asset, tmpDir, "S2A_TEST", "red")
+	_, _, err := DownloadAsset(asset, tmpDir, "S2A_TEST", "red")
 	if err == nil {
 		t.Fatal("expected error for HTTP 404")
 	}
@@ -239,7 +239,7 @@ func TestDownloadAsset_Timeout(t *testing.T) {
 	defer srv.Close()
 
 	asset := Asset{Href: srv.URL + "/slow.tif"}
-	_, err := DownloadAsset(asset, tmpDir, "S2A_TEST", "red")
+	_, _, err := DownloadAsset(asset, tmpDir, "S2A_TEST", "red")
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -292,7 +292,7 @@ func TestDownloadWorker(t *testing.T) {
 func TestDownloadWorker_SkipExisting(t *testing.T) {
 	tmpDir := t.TempDir()
 	existingFile := filepath.Join(tmpDir, "ITEM1_red.tif")
-	os.WriteFile(existingFile, []byte("existing"), 0644)
+	os.WriteFile(existingFile, []byte("new"), 0644)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("new"))
