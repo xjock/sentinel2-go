@@ -1,9 +1,13 @@
 # Binaries
 sentinel2-go
 *.exe
+*.dll
+
 
 # Downloaded data
 sentinel2_data/
+sentinel2_test_data/
+
 
 # OS files
 .DS_Store

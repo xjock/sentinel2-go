@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go version *)",
+      "Bash(go build *)",
+      "Bash(./sentinel2-go.exe *)",
+      "Bash(gdalinfo --version)",
+      "Bash(go vet *)",
+      "Bash(go test *)",
+      "Bash(./sentinel2-go-test *)",
+      "Bash(./sentinel2-go-test.exe *)",
+      "Bash(D:/Dev/toolchain/gdal353_msvc142_x64_v3/bin/gdalinfo *)",
+      "Bash(gdalinfo sentinel2_test_data/S2A_50TMK_20250113_0_L2A_red.tif)",
+      "Bash(gdalinfo sentinel2_test_data/S2A_50TMK_20250113_0_L2A_green.tif)",
+      "Bash(gdalinfo sentinel2_test_data/S2A_50TMK_20250113_0_L2A_blue.tif)",
+      "Bash(gdalbuildvrt -separate S2A_50TMK_20250113_0_L2A_rgb.vrt S2A_50TMK_20250113_0_L2A_red.tif S2A_50TMK_20250113_0_L2A_green.tif S2A_50TMK_20250113_0_L2A_blue.tif)",
+      "Bash(gdal_translate -of GTiff S2A_50TMK_20250113_0_L2A_rgb.vrt S2A_50TMK_20250113_0_L2A_RGB.tif)",
+      "Bash(PATH=\"/d/Dev/toolchain/gdal353_msvc142_x64_v3/bin:$PATH\" gdal_translate *)",
+      "Bash(curl -s \"https://earth-search.aws.element84.com/v1/search?collections=sentinel-2-l2a&bbox=116.2,39.8,116.6,40.0&datetime=2025-01-13T00:00:00Z/2025-01-13T23:59:59Z&limit=1\")",
+      "Bash(curl -v https://earth-search.aws.element84.com/v1/search?collections=sentinel-2-l2a)",
+      "Bash(curl --ssl-no-revoke -s \"https://earth-search.aws.element84.com/v1/search?collections=sentinel-2-l2a&bbox=116.2,39.8,116.6,40.0&datetime=2025-01-13T00:00:00Z/2025-01-13T23:59:59Z&limit=1\")",
+      "Read(//tmp/**)",
+      "Bash(D:/Dev/maps/sentinel2-go/sentinel2-go-test.exe *)",
+      "Bash(./sentinel2-go *)"
+    ]
+  }
+}
