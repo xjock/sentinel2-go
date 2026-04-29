@@ -9,12 +9,14 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
-const (
-	EarthSearchURL = "https://earth-search.aws.element84.com/v1"
-	Collection     = "sentinel-2-l2a"
+var (
+	EarthSearchURL  = "https://earth-search.aws.element84.com/v1"
+	Collection      = "sentinel-2-l2a"
+	DownloadTimeout = 10 * time.Minute
 )
 
 type STACItemCollection struct {
@@ -46,12 +48,13 @@ type Asset struct {
 }
 
 type Config struct {
-	BBox      []float64 `json:"bbox"`
-	StartDate string    `json:"start_date"`
-	EndDate   string    `json:"end_date"`
-	MaxCloud  float64   `json:"max_cloud"`
-	Bands     []string  `json:"bands"`
-	Limit     int       `json:"limit"`
+	BBox       []float64 `json:"bbox"`
+	StartDate  string    `json:"start_date"`
+	EndDate    string    `json:"end_date"`
+	MaxCloud   float64   `json:"max_cloud"`
+	Bands      []string  `json:"bands"`
+	Limit      int       `json:"limit"`
+	MaxWorkers int       `json:"max_workers"`
 }
 
 type SearchOptions struct {
@@ -60,6 +63,20 @@ type SearchOptions struct {
 	EndDate   string
 	Limit     int
 	MaxCloud  float64
+}
+
+type downloadTask struct {
+	itemID  string
+	band    string
+	asset   Asset
+	destDir string
+}
+
+type downloadResult struct {
+	path    string
+	err     error
+	skipped bool
+	task    downloadTask
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -74,6 +91,9 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.Limit == 0 {
 		cfg.Limit = 20
 	}
+	if cfg.MaxWorkers == 0 {
+		cfg.MaxWorkers = 4
+	}
 	return &cfg, nil
 }
 
@@ -84,12 +104,18 @@ func SearchItems(opts SearchOptions) (*STACItemCollection, error) {
 	bboxStr := fmt.Sprintf("%f,%f,%f,%f", opts.Bbox[0], opts.Bbox[1], opts.Bbox[2], opts.Bbox[3])
 	datetime := fmt.Sprintf("%sT00:00:00Z/%sT23:59:59Z", opts.StartDate, opts.EndDate)
 
-	u, _ := url.Parse(EarthSearchURL + "/search")
+	u, err := url.Parse(EarthSearchURL + "/search")
+	if err != nil {
+		return nil, fmt.Errorf("parse URL: %w", err)
+	}
 	q := u.Query()
 	q.Set("collections", Collection)
 	q.Set("bbox", bboxStr)
 	q.Set("datetime", datetime)
 	q.Set("limit", fmt.Sprintf("%d", opts.Limit))
+	if opts.MaxCloud > 0 {
+		q.Set("query", fmt.Sprintf(`{"eo:cloud_cover":{"lte":%f}}`, opts.MaxCloud))
+	}
 	u.RawQuery = q.Encode()
 
 	req, err := http.NewRequest("GET", u.String(), nil)
@@ -127,6 +153,12 @@ func FilterItemsByCloud(items []STACItem, maxCloud float64) []STACItem {
 	return filtered
 }
 
+func assetExists(destDir, itemID, bandName string) bool {
+	filename := fmt.Sprintf("%s_%s.tif", itemID, bandName)
+	_, err := os.Stat(filepath.Join(destDir, filename))
+	return err == nil
+}
+
 func DownloadAsset(asset Asset, destDir string, itemID string, bandName string) (string, error) {
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return "", fmt.Errorf("mkdir %s: %w", destDir, err)
@@ -135,13 +167,8 @@ func DownloadAsset(asset Asset, destDir string, itemID string, bandName string) 
 	filename := fmt.Sprintf("%s_%s.tif", itemID, bandName)
 	destPath := filepath.Join(destDir, filename)
 
-	if _, err := os.Stat(destPath); err == nil {
-		fmt.Printf("  [skip] %s already exists\n", filename)
-		return destPath, nil
-	}
-
-	fmt.Printf("  [downloading] %s -> %s\n", bandName, filename)
-	resp, err := http.Get(asset.Href)
+	client := &http.Client{Timeout: DownloadTimeout}
+	resp, err := client.Get(asset.Href)
 	if err != nil {
 		return "", fmt.Errorf("download failed: %w", err)
 	}
@@ -162,6 +189,18 @@ func DownloadAsset(asset Asset, destDir string, itemID string, bandName string) 
 		return "", fmt.Errorf("write file: %w", err)
 	}
 	return destPath, nil
+}
+
+func downloadWorker(tasks <-chan downloadTask, results chan<- downloadResult) {
+	for task := range tasks {
+		if assetExists(task.destDir, task.itemID, task.band) {
+			path := filepath.Join(task.destDir, fmt.Sprintf("%s_%s.tif", task.itemID, task.band))
+			results <- downloadResult{path: path, skipped: true, task: task}
+			continue
+		}
+		path, err := DownloadAsset(task.asset, task.destDir, task.itemID, task.band)
+		results <- downloadResult{path: path, err: err, task: task}
+	}
 }
 
 func PrintItemSummary(items []STACItem) {
@@ -196,12 +235,13 @@ func main() {
 	}
 
 	fmt.Printf("Searching Sentinel-2 L2A data...\n")
-	fmt.Printf("  Config: %s\n", *configPath)
-	fmt.Printf("  Dest:   %s\n", *destDir)
-	fmt.Printf("  BBox:   %v (west, south, east, north)\n", opts.Bbox)
-	fmt.Printf("  Date:   %s to %s\n", opts.StartDate, opts.EndDate)
-	fmt.Printf("  Cloud:  <= %.0f%%\n", opts.MaxCloud)
-	fmt.Printf("  Bands:  %v\n\n", cfg.Bands)
+	fmt.Printf("  Config:  %s\n", *configPath)
+	fmt.Printf("  Dest:    %s\n", *destDir)
+	fmt.Printf("  BBox:    %v (west, south, east, north)\n", opts.Bbox)
+	fmt.Printf("  Date:    %s to %s\n", opts.StartDate, opts.EndDate)
+	fmt.Printf("  Cloud:   <= %.0f%%\n", opts.MaxCloud)
+	fmt.Printf("  Bands:   %v\n", cfg.Bands)
+	fmt.Printf("  Workers: %d\n\n", cfg.MaxWorkers)
 
 	collection, err := SearchItems(opts)
 	if err != nil {
@@ -217,7 +257,25 @@ func main() {
 	items := FilterItemsByCloud(collection.Features, opts.MaxCloud)
 	PrintItemSummary(items)
 
+	tasks := make(chan downloadTask, cfg.MaxWorkers*2)
+	results := make(chan downloadResult, cfg.MaxWorkers*2)
+
+	var wg sync.WaitGroup
+	for i := 0; i < cfg.MaxWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			downloadWorker(tasks, results)
+		}()
+	}
+
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
 	fmt.Println("\n=== Downloading Bands ===")
+	total := 0
 	for _, item := range items {
 		fmt.Printf("\nItem: %s\n", item.ID)
 		for _, band := range cfg.Bands {
@@ -226,13 +284,32 @@ func main() {
 				fmt.Printf("  [warn] band '%s' not available\n", band)
 				continue
 			}
-			path, err := DownloadAsset(asset, *destDir, item.ID, band)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "  [error] %s: %v\n", band, err)
-				continue
-			}
-			fmt.Printf("  [saved] %s\n", path)
+			tasks <- downloadTask{itemID: item.ID, band: band, asset: asset, destDir: *destDir}
+			total++
 		}
 	}
+	close(tasks)
+
+	failed := 0
+	skipped := 0
+	for res := range results {
+		if res.skipped {
+			fmt.Printf("  [skip] %s_%s.tif already exists\n", res.task.itemID, res.task.band)
+			skipped++
+		} else if res.err != nil {
+			fmt.Fprintf(os.Stderr, "  [error] %s/%s: %v\n", res.task.itemID, res.task.band, res.err)
+			failed++
+		} else {
+			fmt.Printf("  [saved] %s\n", filepath.Base(res.path))
+		}
+	}
+
 	fmt.Println("\nDone.")
+	if failed > 0 {
+		fmt.Printf("%d/%d downloads failed.\n", failed, total)
+		os.Exit(1)
+	}
+	if skipped > 0 {
+		fmt.Printf("%d/%d already existed, skipped.\n", skipped, total)
+	}
 }

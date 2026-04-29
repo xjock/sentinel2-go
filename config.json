@@ -4,5 +4,6 @@
   "end_date": "2025-01-15",
   "max_cloud": 20.0,
   "bands": ["red", "green", "blue", "nir"],
-  "limit": 20
+  "limit": 20,
+  "max_workers": 4
 }
