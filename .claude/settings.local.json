@@ -41,7 +41,9 @@
       "Bash(ldd /d/Dev/toolchain/gdal353_msvc142_x64_v3/bin/gdal_contrast_stretch.exe)",
       "Bash(/d/Dev/toolchain/gdal353_msvc142_x64_v3/bin/gdalinfo.exe -mm sentinel2_stretch_test/S2A_50TMK_20250113_0_L2A_RGB.tif)",
       "Bash(go run *)",
-      "WebFetch(domain:earth-search.aws.element84.com)"
+      "WebFetch(domain:earth-search.aws.element84.com)",
+      "Bash(where pkENVIOptimizedLinear)",
+      "Bash(\"/d/Dev/toolchain/gdal353_msvc142_x64_v3/bin/pkENVIOptimizedLinear\" --help)"
     ]
   }
 }

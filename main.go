@@ -58,6 +58,7 @@ type Config struct {
 	Bands      []string  `json:"bands"`
 	Limit      int       `json:"limit"`
 	MaxWorkers int       `json:"max_workers"`
+	MaxRetries int       `json:"max_retries"`
 }
 
 type SearchOptions struct {
@@ -69,10 +70,11 @@ type SearchOptions struct {
 }
 
 type downloadTask struct {
-	itemID  string
-	band    string
-	asset   Asset
-	destDir string
+	itemID     string
+	band       string
+	asset      Asset
+	destDir    string
+	maxRetries int
 }
 
 type downloadResult struct {
@@ -96,6 +98,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.MaxWorkers == 0 {
 		cfg.MaxWorkers = 4
+	}
+	if cfg.MaxRetries < 0 {
+		cfg.MaxRetries = 0
 	}
 	return &cfg, nil
 }
@@ -320,7 +325,20 @@ func DownloadAsset(asset Asset, destDir string, itemID string, bandName string) 
 
 func downloadWorker(tasks <-chan downloadTask, results chan<- downloadResult) {
 	for task := range tasks {
-		path, skipped, err := DownloadAsset(task.asset, task.destDir, task.itemID, task.band)
+		var path string
+		var skipped bool
+		var err error
+		for attempt := 0; attempt <= task.maxRetries; attempt++ {
+			path, skipped, err = DownloadAsset(task.asset, task.destDir, task.itemID, task.band)
+			if err == nil || skipped {
+				break
+			}
+			if attempt < task.maxRetries {
+				wait := time.Duration(attempt+1) * time.Second
+				fmt.Fprintf(os.Stderr, "  [retry] %s/%s in %.0fs (attempt %d/%d): %v\n", task.itemID, task.band, wait.Seconds(), attempt+1, task.maxRetries, err)
+				time.Sleep(wait)
+			}
+		}
 		results <- downloadResult{path: path, skipped: skipped, err: err, task: task}
 	}
 }
@@ -354,6 +372,12 @@ func gdalEnv() []string {
 	if _, err := os.Stat("share/proj"); err == nil {
 		projDir, _ := filepath.Abs("share/proj")
 		env = append(env, "PROJ_DATA="+projDir)
+	} else if exePath, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exePath)
+		projPath := filepath.Join(exeDir, "share", "proj")
+		if _, err := os.Stat(projPath); err == nil {
+			env = append(env, "PROJ_DATA="+projPath)
+		}
 	}
 	return env
 }
@@ -371,8 +395,10 @@ func BuildRGB(destDir string, itemID string) error {
 
 	rgbName := fmt.Sprintf("%s_RGB.tif", itemID)
 	rgbPath := filepath.Join(destDir, rgbName)
-	if _, err := os.Stat(rgbPath); err == nil {
-		fmt.Printf("  [skip] %s already exists\n", rgbName)
+	stretchName := fmt.Sprintf("%s_stretch.tif", itemID)
+	stretchPath := filepath.Join(destDir, stretchName)
+	if _, err := os.Stat(stretchPath); err == nil {
+		fmt.Printf("  [skip] %s already exists\n", stretchName)
 		return nil
 	}
 
@@ -387,7 +413,25 @@ func BuildRGB(destDir string, itemID string) error {
 	}
 	defer os.Remove(vrtPath)
 
-	stretchCmd := exec.Command(findGDALTool("gdal_contrast_stretch"), "-percentile-range", "0.02", "0.98", vrtPath, rgbPath)
+	transCmd := exec.Command(findGDALTool("gdal_translate"), vrtPath, rgbPath)
+	transCmd.Stdout = os.Stdout
+	transCmd.Stderr = os.Stderr
+	transCmd.Env = gdalEnv()
+	if err := transCmd.Run(); err != nil {
+		return fmt.Errorf("gdal_translate failed: %w", err)
+	}
+
+	// 转成 byte 图像数据（临时文件）
+	bytePath := filepath.Join(destDir, fmt.Sprintf("%s_byte.tif", itemID))
+	byteCmd := exec.Command(findGDALTool("gdal_translate"), "-ot", "Byte", "-scale", rgbPath, bytePath)
+	byteCmd.Stdout = os.Stdout
+	byteCmd.Stderr = os.Stderr
+	byteCmd.Env = gdalEnv()
+	if err := byteCmd.Run(); err != nil {
+		return fmt.Errorf("gdal_translate -ot Byte failed: %w", err)
+	}
+
+	stretchCmd := exec.Command(findGDALTool("gdal_contrast_stretch"), "-percentile-range", "0.02", "0.98", bytePath, stretchPath)
 	stretchCmd.Stdout = os.Stdout
 	stretchCmd.Stderr = os.Stderr
 	stretchCmd.Env = gdalEnv()
@@ -395,7 +439,10 @@ func BuildRGB(destDir string, itemID string) error {
 		return fmt.Errorf("gdal_contrast_stretch failed: %w", err)
 	}
 
-	fmt.Printf("  [rgb] %s\n", rgbPath)
+	os.Remove(rgbPath)
+	os.Remove(bytePath)
+
+	fmt.Printf("  [rgb] %s\n", stretchPath)
 	return nil
 }
 
@@ -425,7 +472,8 @@ func main() {
 	fmt.Printf("  Date:    %s to %s\n", opts.StartDate, opts.EndDate)
 	fmt.Printf("  Cloud:   <= %.0f%%\n", opts.MaxCloud)
 	fmt.Printf("  Bands:   %v\n", cfg.Bands)
-	fmt.Printf("  Workers: %d\n\n", cfg.MaxWorkers)
+	fmt.Printf("  Workers: %d\n", cfg.MaxWorkers)
+	fmt.Printf("  Retries: %d\n\n", cfg.MaxRetries)
 
 	collection, err := SearchItems(opts)
 	if err != nil {
@@ -468,7 +516,7 @@ func main() {
 				fmt.Printf("  [warn] band '%s' not available\n", band)
 				continue
 			}
-			tasks <- downloadTask{itemID: item.ID, band: band, asset: asset, destDir: *destDir}
+			tasks <- downloadTask{itemID: item.ID, band: band, asset: asset, destDir: *destDir, maxRetries: cfg.MaxRetries}
 			total++
 		}
 	}
