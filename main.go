@@ -27,11 +27,17 @@ type STACItemCollection struct {
 	Features []STACItem `json:"features"`
 }
 
+type Geometry struct {
+	Type        string          `json:"type"`
+	Coordinates [][][]float64   `json:"coordinates"`
+}
+
 type STACItem struct {
 	ID         string           `json:"id"`
 	Type       string           `json:"type"`
 	Collection string           `json:"collection"`
 	BBox       []float64        `json:"bbox"`
+	Geometry   Geometry         `json:"geometry"`
 	Properties STACProperties   `json:"properties"`
 	Assets     map[string]Asset `json:"assets"`
 }
@@ -159,6 +165,128 @@ func FilterItemsByCloud(items []STACItem, maxCloud float64) []STACItem {
 		}
 	}
 	return filtered
+}
+
+func SaveKML(item STACItem, destDir string) (string, error) {
+	if item.Geometry.Type != "Polygon" || len(item.Geometry.Coordinates) == 0 {
+		return "", fmt.Errorf("no polygon geometry for %s", item.ID)
+	}
+
+	kmlPath := filepath.Join(destDir, item.ID+".kml")
+	if _, err := os.Stat(kmlPath); err == nil {
+		fmt.Printf("  [skip] %s already exists\n", item.ID+".kml")
+		return kmlPath, nil
+	}
+
+	ring := item.Geometry.Coordinates[0]
+	var coords strings.Builder
+	for _, p := range ring {
+		if len(p) >= 2 {
+			coords.WriteString(fmt.Sprintf("%f,%f,0 ", p[0], p[1]))
+		}
+	}
+
+	kml := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <Style id="polyStyle">
+      <LineStyle>
+        <color>ff0000ff</color>
+        <width>2</width>
+      </LineStyle>
+      <PolyStyle>
+        <color>7f0000ff</color>
+        <fill>1</fill>
+        <outline>1</outline>
+      </PolyStyle>
+    </Style>
+    <Placemark>
+      <name>%s</name>
+      <styleUrl>#polyStyle</styleUrl>
+      <Polygon>
+        <outerBoundaryIs>
+          <LinearRing>
+            <coordinates>%s</coordinates>
+          </LinearRing>
+        </outerBoundaryIs>
+      </Polygon>
+    </Placemark>
+  </Document>
+</kml>`, item.ID, strings.TrimSpace(coords.String()))
+
+	if err := os.WriteFile(kmlPath, []byte(kml), 0644); err != nil {
+		return "", fmt.Errorf("write kml: %w", err)
+	}
+	fmt.Printf("  [saved] %s\n", item.ID+".kml")
+	return kmlPath, nil
+}
+
+var knownBands = []string{"coastal", "blue", "green", "red", "rededge1", "rededge2", "rededge3", "nir", "nir08", "nir09", "swir16", "swir22", "scl"}
+
+func parseItemIDFromFilename(filename string) string {
+	if !strings.HasSuffix(filename, ".tif") {
+		return ""
+	}
+	base := strings.TrimSuffix(filename, ".tif")
+	for _, band := range knownBands {
+		suffix := "_" + band
+		if strings.HasSuffix(base, suffix) {
+			return strings.TrimSuffix(base, suffix)
+		}
+	}
+	return ""
+}
+
+func scanExistingItems(destDir string) map[string]bool {
+	items := make(map[string]bool)
+	entries, err := os.ReadDir(destDir)
+	if err != nil {
+		return items
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		itemID := parseItemIDFromFilename(entry.Name())
+		if itemID != "" {
+			items[itemID] = true
+		}
+	}
+	return items
+}
+
+func fetchItemGeometry(itemID string) (Geometry, error) {
+	u, err := url.Parse(fmt.Sprintf("%s/collections/%s/items/%s", EarthSearchURL, Collection, itemID))
+	if err != nil {
+		return Geometry{}, fmt.Errorf("parse URL: %w", err)
+	}
+
+	req, err := http.NewRequest("GET", u.String(), nil)
+	if err != nil {
+		return Geometry{}, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Accept", "application/geo+json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return Geometry{}, fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return Geometry{}, fmt.Errorf("STAC API returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var item STACItem
+	if err := json.NewDecoder(resp.Body).Decode(&item); err != nil {
+		return Geometry{}, fmt.Errorf("decode JSON: %w", err)
+	}
+	if item.Geometry.Type != "Polygon" || len(item.Geometry.Coordinates) == 0 {
+		return Geometry{}, fmt.Errorf("no polygon geometry in response")
+	}
+	return item.Geometry, nil
 }
 
 func assetExists(destDir, itemID, bandName string) bool {
@@ -393,17 +521,14 @@ func BuildRGB(destDir string, itemID string) error {
 		bandPaths = append(bandPaths, p)
 	}
 
-	rgbName := fmt.Sprintf("%s_RGB.tif", itemID)
-	rgbPath := filepath.Join(destDir, rgbName)
-	stretchName := fmt.Sprintf("%s_stretch.tif", itemID)
-	stretchPath := filepath.Join(destDir, stretchName)
-	if _, err := os.Stat(stretchPath); err == nil {
-		fmt.Printf("  [skip] %s already exists\n", stretchName)
+	byteName := fmt.Sprintf("%s_byte.tif", itemID)
+	bytePath := filepath.Join(destDir, byteName)
+	if _, err := os.Stat(bytePath); err == nil {
+		fmt.Printf("  [skip] %s already exists\n", byteName)
 		return nil
 	}
 
 	vrtPath := filepath.Join(destDir, fmt.Sprintf("%s_rgb.vrt", itemID))
-
 	buildCmd := exec.Command(findGDALTool("gdalbuildvrt"), append([]string{"-separate", vrtPath}, bandPaths...)...)
 	buildCmd.Stdout = os.Stdout
 	buildCmd.Stderr = os.Stderr
@@ -413,6 +538,7 @@ func BuildRGB(destDir string, itemID string) error {
 	}
 	defer os.Remove(vrtPath)
 
+	rgbPath := filepath.Join(destDir, fmt.Sprintf("%s_RGB.tif", itemID))
 	transCmd := exec.Command(findGDALTool("gdal_translate"), vrtPath, rgbPath)
 	transCmd.Stdout = os.Stdout
 	transCmd.Stderr = os.Stderr
@@ -421,28 +547,26 @@ func BuildRGB(destDir string, itemID string) error {
 		return fmt.Errorf("gdal_translate failed: %w", err)
 	}
 
-	// 转成 byte 图像数据（临时文件）
-	bytePath := filepath.Join(destDir, fmt.Sprintf("%s_byte.tif", itemID))
-	byteCmd := exec.Command(findGDALTool("gdal_translate"), "-ot", "Byte", "-scale", rgbPath, bytePath)
+	// 固定 0-3000 拉伸到 1-255，0 保留为 nodata
+	args := []string{
+		"-ot", "Byte",
+		"-a_nodata", "0",
+		"-scale_1", "0", "3000", "1", "255",
+		"-scale_2", "0", "3000", "1", "255",
+		"-scale_3", "0", "3000", "1", "255",
+		rgbPath, bytePath,
+	}
+	fmt.Printf("  [cmd] %s %s\n", findGDALTool("gdal_translate"), strings.Join(args, " "))
+
+	byteCmd := exec.Command(findGDALTool("gdal_translate"), args...)
 	byteCmd.Stdout = os.Stdout
 	byteCmd.Stderr = os.Stderr
 	byteCmd.Env = gdalEnv()
 	if err := byteCmd.Run(); err != nil {
-		return fmt.Errorf("gdal_translate -ot Byte failed: %w", err)
+		return fmt.Errorf("gdal_translate to byte failed: %w", err)
 	}
 
-	stretchCmd := exec.Command(findGDALTool("gdal_contrast_stretch"), "-percentile-range", "0.02", "0.98", bytePath, stretchPath)
-	stretchCmd.Stdout = os.Stdout
-	stretchCmd.Stderr = os.Stderr
-	stretchCmd.Env = gdalEnv()
-	if err := stretchCmd.Run(); err != nil {
-		return fmt.Errorf("gdal_contrast_stretch failed: %w", err)
-	}
-
-	os.Remove(rgbPath)
-	os.Remove(bytePath)
-
-	fmt.Printf("  [rgb] %s\n", stretchPath)
+	fmt.Printf("  [rgb] %s  %s\n", rgbPath, bytePath)
 	return nil
 }
 
@@ -489,6 +613,28 @@ func main() {
 	items := FilterItemsByCloud(collection.Features, opts.MaxCloud)
 	PrintItemSummary(items)
 
+	// 为已有数据补生成 KML
+	existingItems := scanExistingItems(*destDir)
+	if len(existingItems) > 0 {
+		fmt.Println("\n=== Checking existing KML ===")
+		for itemID := range existingItems {
+			kmlPath := filepath.Join(*destDir, itemID+".kml")
+			if _, err := os.Stat(kmlPath); err == nil {
+				continue
+			}
+			fmt.Printf("  [kml fetch] %s\n", itemID)
+			geom, err := fetchItemGeometry(itemID)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  [kml fail] %s: %v\n", itemID, err)
+				continue
+			}
+			item := STACItem{ID: itemID, Geometry: geom}
+			if _, err := SaveKML(item, *destDir); err != nil {
+				fmt.Fprintf(os.Stderr, "  [kml fail] %s: %v\n", itemID, err)
+			}
+		}
+	}
+
 	tasks := make(chan downloadTask, cfg.MaxWorkers*2)
 	results := make(chan downloadResult, cfg.MaxWorkers*2)
 
@@ -510,6 +656,9 @@ func main() {
 	total := 0
 	for _, item := range items {
 		fmt.Printf("\nItem: %s\n", item.ID)
+		if _, err := SaveKML(item, *destDir); err != nil {
+			fmt.Fprintf(os.Stderr, "  [kml skip] %s: %v\n", item.ID, err)
+		}
 		for _, band := range cfg.Bands {
 			asset, ok := item.Assets[band]
 			if !ok {
