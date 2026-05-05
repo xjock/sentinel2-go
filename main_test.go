@@ -149,7 +149,7 @@ func TestSearchItems(t *testing.T) {
 		Limit:     5,
 		MaxCloud:  20,
 	}
-	collection, err := SearchItems(opts)
+	collection, err := SearchItems(opts, NoOpAuth{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestSearchItems_HTTPError(t *testing.T) {
 		StartDate: "2025-01-01",
 		EndDate:   "2025-01-02",
 		Limit:     1,
-	})
+	}, NoOpAuth{})
 	if err == nil {
 		t.Fatal("expected error for HTTP 400")
 	}
@@ -195,7 +195,7 @@ func TestDownloadAsset_Success(t *testing.T) {
 	defer srv.Close()
 
 	asset := Asset{Href: srv.URL + "/test.tif"}
-	path, _, err := DownloadAsset(asset, tmpDir, "S2A_TEST", "red")
+	path, _, err := DownloadAsset(asset, tmpDir, "S2A_TEST", "red", NoOpAuth{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestDownloadAsset_HTTPError(t *testing.T) {
 	defer srv.Close()
 
 	asset := Asset{Href: srv.URL + "/missing.tif"}
-	_, _, err := DownloadAsset(asset, tmpDir, "S2A_TEST", "red")
+	_, _, err := DownloadAsset(asset, tmpDir, "S2A_TEST", "red", NoOpAuth{})
 	if err == nil {
 		t.Fatal("expected error for HTTP 404")
 	}
@@ -239,7 +239,7 @@ func TestDownloadAsset_Timeout(t *testing.T) {
 	defer srv.Close()
 
 	asset := Asset{Href: srv.URL + "/slow.tif"}
-	_, _, err := DownloadAsset(asset, tmpDir, "S2A_TEST", "red")
+	_, _, err := DownloadAsset(asset, tmpDir, "S2A_TEST", "red", NoOpAuth{})
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -271,6 +271,7 @@ func TestDownloadWorker(t *testing.T) {
 			band:    "red",
 			asset:   Asset{Href: srv.URL + fmt.Sprintf("/%d.tif", i)},
 			destDir: tmpDir,
+			auth:    NoOpAuth{},
 		}
 	}
 	close(tasks)
@@ -309,8 +310,8 @@ func TestDownloadWorker_SkipExisting(t *testing.T) {
 		downloadWorker(tasks, results)
 	}()
 
-	tasks <- downloadTask{itemID: "ITEM1", band: "red", asset: Asset{Href: srv.URL + "/1.tif"}, destDir: tmpDir}
-	tasks <- downloadTask{itemID: "ITEM2", band: "red", asset: Asset{Href: srv.URL + "/2.tif"}, destDir: tmpDir}
+	tasks <- downloadTask{itemID: "ITEM1", band: "red", asset: Asset{Href: srv.URL + "/1.tif"}, destDir: tmpDir, auth: NoOpAuth{}}
+	tasks <- downloadTask{itemID: "ITEM2", band: "red", asset: Asset{Href: srv.URL + "/2.tif"}, destDir: tmpDir, auth: NoOpAuth{}}
 	close(tasks)
 	wg.Wait()
 	close(results)
@@ -368,6 +369,7 @@ func TestDownloadWorker_Concurrent(t *testing.T) {
 			band:    "nir",
 			asset:   Asset{Href: srv.URL + fmt.Sprintf("/%d.tif", i)},
 			destDir: tmpDir,
+			auth:    NoOpAuth{},
 		}
 	}
 	close(tasks)

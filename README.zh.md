@@ -1,49 +1,119 @@
 # Sentinel-2 Go 下载器
 
-一个轻量级的 Go 程序，用于从 [Earth Search](https://earth-search.aws.element84.com/) STAC API 查询并下载公开的 Sentinel-2 L2A 卫星影像，**无需任何认证**。
+一个轻量级的 Go 程序，支持从多个 STAC API 数据源查询并下载 Sentinel-2 L2A 卫星影像，内置交互式网页配置向导。
 
 ## 特性
 
-- 无需 API Key 或凭证
-- 支持按边界框、日期范围、云量过滤查询
-- 下载单波段 Cloud Optimized GeoTIFF (COG) 文件
-- 自动跳过已下载文件
-- 纯 Go 实现，零外部依赖
-- JSON 配置文件驱动
-- 命令行参数指定输出目录
-
-## 环境要求
-
-- [Go](https://go.dev/) 1.21 或更高版本
+- **多数据源支持**：Earth Search（公开，无需认证）或 Copernicus Data Space Ecosystem（CDSE）
+- **网页配置向导**：首次运行自动打开浏览器页面进行配置
+- **自动波段映射**：使用 `red`、`green`、`blue` 等友好名称，自动转换为各数据源对应的 Asset 键
+- **断点续传**：自动跳过已下载文件，支持中断后恢复下载
+- **并发下载**：可配置工作线程数
+- **RGB 合成**：通过 GDAL 自动构建 RGB 合成图
+- **纯 Go 实现，零外部依赖**
 
 ## 快速开始
 
 ```bash
 git clone <你的仓库地址>
 cd sentinel2-go
+go build -o sentinel2-go main.go
 
-# 编辑 config.json 设置你的查询区域和日期
-go run main.go -config config.json -dest ./sentinel2_data
+# 首次运行 — 自动打开浏览器配置页面
+./sentinel2-go
 ```
 
-程序会：
-1. 从 `config.json` 加载查询参数
-2. 根据配置的边界框和日期范围搜索 Sentinel-2 L2A 数据
-3. 按云量过滤结果
-4. 将请求的波段下载到指定目录
+首次运行时，如果没有 `~/.sentinel2-go/settings.json`，程序会自动在本地启动 HTTP 服务并打开浏览器，引导你选择数据源和认证方式。
 
-## 配置
+## 配置向导
 
-创建 `config.json` 文件（参考 `config.json`）：
+### 首次运行（自动）
+
+```bash
+./sentinel2-go
+```
+
+如果 `~/.sentinel2-go/settings.json` 不存在，程序自动启动配置向导。
+
+### 手动重新配置
+
+```bash
+# 网页配置（打开浏览器）
+./sentinel2-go -setup
+
+# 终端配置（无浏览器环境，适合 SSH）
+./sentinel2-go -setup-auth
+```
+
+### 数据源选项
+
+| 选项 | 说明 | 认证 |
+|------|------|------|
+| **Earth Search STAC API** | AWS 托管的公开 STAC，无需认证 | 无需 |
+| **CDSE** | 欧盟哥白尼数据空间，官方数据源 | 用户名+密码 或 OAuth Client Credentials |
+| **自定义 STAC** | 任何兼容的 STAC API 端点 | OAuth2 或无需 |
+
+### CDSE 配置步骤
+
+1. 访问 [dataspace.copernicus.eu](https://dataspace.copernicus.eu/) 注册账号
+2. 查收验证邮件，点击链接完成验证
+3. 在配置页面选择认证方式：
+   - **用户名 + 密码** — 快速开始，使用 CDSE 登录邮箱和密码
+   - **OAuth Client Credentials** — 推荐长期使用；需在账号设置的 OAuth Clients 中创建
+4. 保存并继续
+
+配置保存在 `~/.sentinel2-go/settings.json`（文件权限 `0600`，仅所有者可读写）。
+
+### `settings.json` — 认证配置
+
+```json
+// 用户名 + 密码 方式
+{
+  "source": "cdse",
+  "stac_url": "https://stac.dataspace.copernicus.eu/v1",
+  "collection": "sentinel-2-l2a",
+  "auth": {
+    "grant_type": "password",
+    "username": "your-email@example.com",
+    "password": "your-password"
+  }
+}
+
+// OAuth Client Credentials 方式
+{
+  "source": "cdse",
+  "stac_url": "https://stac.dataspace.copernicus.eu/v1",
+  "collection": "sentinel-2-l2a",
+  "auth": {
+    "grant_type": "client_credentials",
+    "client_id": "your-client-id",
+    "client_secret": "your-client-secret"
+  }
+}
+```
+
+| 字段 | 适用方式 | 说明 |
+|------|----------|------|
+| `grant_type` | 所有 CDSE | `"password"`（用户名密码）或 `"client_credentials"`（OAuth） |
+| `username` | password | CDSE 登录邮箱 |
+| `password` | password | CDSE 登录密码 |
+| `client_id` | client_credentials | 在账号设置的 OAuth Clients 中获取的 Client ID |
+| `client_secret` | client_credentials | 对应的 Client Secret |
+
+## 配置说明
+
+### `config.json` — 查询参数
 
 ```json
 {
   "bbox": [116.2, 39.8, 116.6, 40.0],
-  "start_date": "2025-01-01",
-  "end_date": "2025-01-15",
+  "start_date": "2026-04-01",
+  "end_date": "2026-04-15",
   "max_cloud": 20.0,
   "bands": ["red", "green", "blue", "nir"],
-  "limit": 20
+  "limit": 20,
+  "max_workers": 4,
+  "max_retries": 3
 }
 ```
 
@@ -53,60 +123,82 @@ go run main.go -config config.json -dest ./sentinel2_data
 | `start_date` | `string` | 起始日期 `YYYY-MM-DD` |
 | `end_date` | `string` | 结束日期 `YYYY-MM-DD` |
 | `max_cloud` | `float64` | 最大云量百分比 (0-100) |
-| `bands` | `[string]` | 要下载的波段列表 |
+| `bands` | `[string]` | 要下载的波段列表（友好名称） |
 | `limit` | `int` | 最大查询 STAC 条目数（默认 20） |
+| `max_workers` | `int` | 并发下载线程数（默认 4） |
+| `max_retries` | `int` | 失败重试次数（默认 0） |
 
 ### 命令行参数
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `-config` | `config.json` | 配置文件路径 |
+| `-config` | `config.json` | 查询配置文件路径 |
 | `-dest` | `./sentinel2_data` | 下载文件保存目录 |
+| `-setup` | — | 打开网页配置向导 |
+| `-setup-auth` | — | 终端认证配置 |
 
-### 使用示例
+### 环境变量
 
-```bash
-# 使用默认配置文件和默认输出目录
-go run main.go
+在 `config.json` 中可引用环境变量：
 
-# 使用自定义配置和输出目录
-go run main.go -config beijing.json -dest /data/s2_beijing
-
-# 运行编译后的二进制文件
-./sentinel2-go -config europe.json -dest ./europe_s2
+```json
+{
+  "auth": {
+    "client_id": "${CDSE_CLIENT_ID}",
+    "client_secret": "${CDSE_CLIENT_SECRET}"
+  }
+}
 ```
 
-### 获取边界框
+## 波段映射
 
-- [geojson.io](http://geojson.io/) 画一个矩形，右下角显示坐标
-- Python: `from shapely import box; list(box(minx, miny, maxx, maxy).bounds)`
+在 `config.json` 中使用**友好名称**，程序自动映射为各数据源对应的 Asset 键。
 
-### 可用波段
+### Earth Search 波段
 
-| 波段名 | 说明 |
-|--------|------|
-| `coastal` | B01 海岸/气溶胶 |
-| `blue`    | B02 蓝 |
-| `green`   | B03 绿 |
-| `red`     | B04 红 |
-| `rededge1`| B05 红边 1 |
-| `rededge2`| B06 红边 2 |
-| `rededge3`| B07 红边 3 |
-| `nir`     | B08 近红外 |
-| `nir08`   | B8A 窄近红外 |
-| `nir09`   | B09 水汽 |
-| `swir16`  | B11 短波红外 1 |
-| `swir22`  | B12 短波红外 2 |
-| `scl`     | 场景分类图层 |
+| 友好名称 | Earth Search 键 | Sentinel-2 波段 |
+|----------|----------------|-----------------|
+| `coastal` | `coastal` | B01 |
+| `blue` | `blue` | B02 |
+| `green` | `green` | B03 |
+| `red` | `red` | B04 |
+| `rededge1` | `rededge1` | B05 |
+| `rededge2` | `rededge2` | B06 |
+| `rededge3` | `rededge3` | B07 |
+| `nir` | `nir` | B08 |
+| `nir08` | `nir08` | B8A |
+| `nir09` | `nir09` | B09 |
+| `swir16` | `swir16` | B11 |
+| `swir22` | `swir22` | B12 |
+| `scl` | `scl` | SCL |
+
+### CDSE 波段（自动映射）
+
+| 友好名称 | CDSE Asset 键 | 分辨率 |
+|----------|---------------|--------|
+| `coastal` | `B01_60m` | 60m |
+| `blue` | `B02_10m` | 10m |
+| `green` | `B03_10m` | 10m |
+| `red` | `B04_10m` | 10m |
+| `rededge1` | `B05_20m` | 20m |
+| `rededge2` | `B06_20m` | 20m |
+| `rededge3` | `B07_20m` | 20m |
+| `nir` | `B08_10m` | 10m |
+| `nir08` | `B8A_20m` | 20m |
+| `nir09` | `B09_60m` | 60m |
+| `swir16` | `B11_20m` | 20m |
+| `swir22` | `B12_20m` | 20m |
+| `scl` | `SCL_20m` | 20m |
+| `aot` | `AOT_20m` | 20m |
+| `wvp` | `WVP_10m` | 10m |
+| `tci` | `TCI_10m` | 10m |
+
+示例：配置 `"bands": ["red", "green", "blue"]`，程序会自动从 CDSE 下载 `B04_10m`、`B03_10m`、`B02_10m`，但文件名仍保存为 `<item>_red.tif`、`<item>_green.tif`、`<item>_blue.tif`，与 `BuildRGB` 兼容。
 
 ## 编译
 
 ```bash
-# 编译二进制文件
 go build -o sentinel2-go main.go
-
-# 运行
-./sentinel2-go -config config.json -dest ./output
 ```
 
 ## Docker
@@ -127,37 +219,29 @@ sentinel2_data/
   ...
 ```
 
-这些是标准 GeoTIFF 文件，可用 QGIS、GDAL、Python (`rioxarray`) 等打开。
-
-## 项目结构
-
-```
-sentinel2-go/
-├── main.go                   # Go 主程序
-├── go.mod                    # Go 模块
-├── config.json               # 查询配置示例
-├── README.md                 # 英文文档
-├── README.zh.md              # 中文文档（本文件）
-├── Dockerfile                # Docker 镜像
-├── Makefile                  # 构建脚本
-├── .gitignore                # Git 忽略规则
-└── .github/workflows/go.yml  # GitHub Actions CI
-```
+CDSE 的源文件格式为 JPEG 2000（`.jp2`），但 GDAL 工具可直接读取。RGB 合成输出为 8-bit GeoTIFF。
 
 ## 常见问题
 
 **Q: 下载失败/超时？**
-- 每个 COG 文件约 50-200MB，下载时间取决于网络
-- 程序默认 HTTP 超时 5 分钟，可在 `DownloadAsset` 中调整
+- 每个文件约 50-200MB，下载时间取决于网络
+- 默认超时 10 分钟
+- CDSE OData 下载可能比 Earth Search COG 慢
 
 **Q: 没有返回数据？**
-- 检查日期范围是否在有效时间内（Earth Search 一般保留最近几年数据）
+- 检查日期范围是否在有效时间内
 - 检查 bbox 是否在陆地范围内
 - 尝试调高 `max_cloud` 或去掉云量过滤
+- CDSE 数据覆盖可能与 Earth Search 不同
 
-**Q: 需要在 Go 中读取像素值而不是下载文件？**
-- 本程序只负责"抓取"（下载）
-- 如需在 Go 中读取 TIFF 像素，需引入 `github.com/airbusgeo/godal`（GDAL 的 Go 绑定），但部署需安装 GDAL C 库
+**Q: 如何从 CDSE 切回 Earth Search？**
+```bash
+./sentinel2-go -setup
+# 选择 "Earth Search STAC API（无需认证）" 并保存
+```
+
+**Q: 可以使用自定义 STAC API 吗？**
+可以。在配置向导中选择"自定义 STAC API"，填写端点地址、Collection 名称和 OAuth 凭据。
 
 ## 许可证
 

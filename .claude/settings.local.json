@@ -44,7 +44,26 @@
       "WebFetch(domain:earth-search.aws.element84.com)",
       "Bash(where pkENVIOptimizedLinear)",
       "Bash(\"/d/Dev/toolchain/gdal353_msvc142_x64_v3/bin/pkENVIOptimizedLinear\" --help)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(go fmt *)",
+      "Bash(cat > *)",
+      "Read(//home/luca/.sentinel2-go/**)",
+      "Bash(rm -f /home/luca/.sentinel2-go/credentials.json)",
+      "Bash(curl -s http://127.0.0.1:41063)",
+      "Bash(pkill -f \"sentinel2-go -setup\")",
+      "Bash(curl -s \"https://stac.dataspace.copernicus.eu/v1/collections\")",
+      "Bash(curl -s -D - \"https://stac.dataspace.copernicus.eu/v1/collections\" -o /dev/null)",
+      "Bash(python3 -c \"import sys,json; data=json.load\\(sys.stdin\\); print\\('\\\\n'.join\\(c['id'] for c in data.get\\('collections',[]\\)\\)\\)\")",
+      "Bash(curl -s \"https://stac.dataspace.copernicus.eu/v1/collections/sentinel-2-l2a\")",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(d.get\\('id','not found'\\), d.get\\('title',''\\)\\)\")",
+      "Bash(curl -s \"https://stac.dataspace.copernicus.eu/v1/search?collections=sentinel-2-l2a&bbox=116.2,39.8,116.6,40.0&datetime=2026-01-01T00:00:00Z/2026-01-15T23:59:59Z&limit=5\")",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('Features:', len\\(d.get\\('features',[]\\)\\)\\); print\\('Type:', d.get\\('type'\\)\\)\")",
+      "Bash(curl -s \"https://stac.dataspace.copernicus.eu/v1/search?collections=sentinel-2-l2a&bbox=116.2,39.8,116.6,40.0&datetime=2026-04-01T00:00:00Z/2026-04-15T23:59:59Z&limit=1\")",
+      "Bash(python3 -c ' *)"
+    ],
+    "additionalDirectories": [
+      "/tmp",
+      "/home/luca/.sentinel2-go"
     ]
   }
 }
