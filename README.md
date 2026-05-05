@@ -50,16 +50,14 @@ If `~/.sentinel2-go/settings.json` does not exist, the program automatically sta
 | Option | Description | Authentication |
 |--------|-------------|----------------|
 | **Earth Search STAC API** | Public AWS-hosted STAC, no auth needed | None |
-| **CDSE** | Copernicus Data Space Ecosystem, official EU source | Username+Password or OAuth Client Credentials |
-| **Custom STAC** | Any compatible STAC API endpoint | OAuth2 or none |
+| **CDSE** | Copernicus Data Space Ecosystem, official EU source | Username+Password |
+| **Custom STAC** | Any compatible STAC API endpoint | none |
 
 ### CDSE Setup Steps
 
 1. Visit [dataspace.copernicus.eu](https://dataspace.copernicus.eu/) and register
 2. Verify your email
-3. In the setup page, choose authentication method:
-   - **Username + Password** — quick start, uses your CDSE login
-   - **OAuth Client Credentials** — recommended for long-term use; create an OAuth Client in Account Settings
+3. In the setup page, enter your CDSE username (email) and password
 4. Save and continue
 
 Settings are stored in `~/.sentinel2-go/settings.json` (permissions `0600`).
@@ -67,38 +65,21 @@ Settings are stored in `~/.sentinel2-go/settings.json` (permissions `0600`).
 ### `settings.json` — Authentication
 
 ```json
-// Username + Password
 {
   "source": "cdse",
   "stac_url": "https://stac.dataspace.copernicus.eu/v1",
   "collection": "sentinel-2-l2a",
   "auth": {
-    "grant_type": "password",
     "username": "your-email@example.com",
     "password": "your-password"
   }
 }
-
-// OAuth Client Credentials
-{
-  "source": "cdse",
-  "stac_url": "https://stac.dataspace.copernicus.eu/v1",
-  "collection": "sentinel-2-l2a",
-  "auth": {
-    "grant_type": "client_credentials",
-    "client_id": "your-client-id",
-    "client_secret": "your-client-secret"
-  }
-}
 ```
 
-| Field | Required for | Description |
-|-------|--------------|-------------|
-| `grant_type` | all CDSE | `"password"` or `"client_credentials"` |
-| `username` | password | CDSE login email |
-| `password` | password | CDSE login password |
-| `client_id` | client_credentials | OAuth Client ID from Account Settings |
-| `client_secret` | client_credentials | OAuth Client Secret |
+| Field | Description |
+|-------|-------------|
+| `username` | CDSE login email |
+| `password` | CDSE login password |
 
 ## Configuration
 
@@ -144,8 +125,8 @@ In `config.json`, you can reference environment variables:
 ```json
 {
   "auth": {
-    "client_id": "${CDSE_CLIENT_ID}",
-    "client_secret": "${CDSE_CLIENT_SECRET}"
+    "username": "${CDSE_USERNAME}",
+    "password": "${CDSE_PASSWORD}"
   }
 }
 ```
@@ -241,7 +222,7 @@ For CDSE, the source files are JPEG 2000 (`.jp2`), but GDAL tools handle them tr
 ```
 
 **Q: Can I use custom STAC APIs?**
-Yes. In the setup wizard, choose "Custom STAC API" and provide your endpoint URL, collection name, and OAuth credentials.
+Yes. In the setup wizard, choose "Custom STAC API" and provide your endpoint URL and collection name.
 
 ## License
 

@@ -32,3 +32,4 @@ vendor/
 
 # Secret
 settings.json
+PRIVATE.md

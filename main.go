@@ -108,11 +108,8 @@ type SearchOptions struct {
 }
 
 type AuthConfig struct {
-	ClientID     string `json:"client_id"`
-	ClientSecret string `json:"client_secret"`
-	Username     string `json:"username,omitempty"`
-	Password     string `json:"password,omitempty"`
-	GrantType    string `json:"grant_type,omitempty"`
+	Username string `json:"username,omitempty"`
+	Password string `json:"password,omitempty"`
 }
 
 // Authenticator attaches credentials to an HTTP request.
@@ -125,14 +122,10 @@ type NoOpAuth struct{}
 
 func (NoOpAuth) Apply(req *http.Request) error { return nil }
 
-// OAuth2Auth implements CDSE Keycloak OAuth2 flow (client_credentials or password).
-type OAuth2Auth struct {
-	TokenURL     string
-	GrantType    string
-	ClientID     string
-	ClientSecret string
-	Username     string
-	Password     string
+// CDSEAuth implements CDSE Keycloak OAuth2 password grant flow.
+type CDSEAuth struct {
+	Username string
+	Password string
 
 	mu        sync.RWMutex
 	token     string
@@ -140,28 +133,15 @@ type OAuth2Auth struct {
 	margin    time.Duration
 }
 
-func NewOAuth2Auth(clientID, clientSecret string) *OAuth2Auth {
-	return &OAuth2Auth{
-		TokenURL:     "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token",
-		GrantType:    "client_credentials",
-		ClientID:     clientID,
-		ClientSecret: clientSecret,
-		margin:       30 * time.Second,
+func NewCDSEAuth(username, password string) *CDSEAuth {
+	return &CDSEAuth{
+		Username: username,
+		Password: password,
+		margin:   30 * time.Second,
 	}
 }
 
-func NewPasswordAuth(username, password string) *OAuth2Auth {
-	return &OAuth2Auth{
-		TokenURL:  "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token",
-		GrantType: "password",
-		ClientID:  "cdse-public",
-		Username:  username,
-		Password:  password,
-		margin:    30 * time.Second,
-	}
-}
-
-func (o *OAuth2Auth) Apply(req *http.Request) error {
+func (o *CDSEAuth) Apply(req *http.Request) error {
 	tok, err := o.tokenWithRefresh(req.Context())
 	if err != nil {
 		return err
@@ -170,7 +150,7 @@ func (o *OAuth2Auth) Apply(req *http.Request) error {
 	return nil
 }
 
-func (o *OAuth2Auth) tokenWithRefresh(ctx context.Context) (string, error) {
+func (o *CDSEAuth) tokenWithRefresh(ctx context.Context) (string, error) {
 	o.mu.RLock()
 	tok, valid := o.token, time.Now().Add(o.margin).Before(o.expiresAt)
 	o.mu.RUnlock()
@@ -186,21 +166,14 @@ func (o *OAuth2Auth) tokenWithRefresh(ctx context.Context) (string, error) {
 	return o.fetchToken(ctx)
 }
 
-func (o *OAuth2Auth) fetchToken(ctx context.Context) (string, error) {
+func (o *CDSEAuth) fetchToken(ctx context.Context) (string, error) {
 	data := url.Values{}
-	data.Set("grant_type", o.GrantType)
+	data.Set("grant_type", "password")
+	data.Set("client_id", "cdse-public")
+	data.Set("username", o.Username)
+	data.Set("password", o.Password)
 
-	switch o.GrantType {
-	case "password":
-		data.Set("client_id", o.ClientID)
-		data.Set("username", o.Username)
-		data.Set("password", o.Password)
-	default: // client_credentials
-		data.Set("client_id", o.ClientID)
-		data.Set("client_secret", o.ClientSecret)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", o.TokenURL, strings.NewReader(data.Encode()))
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token", strings.NewReader(data.Encode()))
 	if err != nil {
 		return "", err
 	}
@@ -213,7 +186,8 @@ func (o *OAuth2Auth) fetchToken(ctx context.Context) (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("token endpoint returned %d", resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("token endpoint returned %d: %s", resp.StatusCode, string(body))
 	}
 
 	var tr struct {
@@ -275,10 +249,6 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.Collection == "" {
 		cfg.Collection = Collection
-	}
-	if cfg.Auth != nil {
-		cfg.Auth.ClientID = resolveEnv(cfg.Auth.ClientID)
-		cfg.Auth.ClientSecret = resolveEnv(cfg.Auth.ClientSecret)
 	}
 	return &cfg, nil
 }
@@ -797,72 +767,6 @@ func BuildRGB(destDir string, itemID string) error {
 	return nil
 }
 
-// ---------- Credentials Management ----------
-
-func credentialsPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = "."
-	}
-	return filepath.Join(home, ".sentinel2-go", "credentials.json")
-}
-
-type storedCredentials struct {
-	ClientID     string `json:"client_id"`
-	ClientSecret string `json:"client_secret"`
-}
-
-func loadCredentials() (*storedCredentials, error) {
-	path := credentialsPath()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	var creds storedCredentials
-	if err := json.Unmarshal(data, &creds); err != nil {
-		return nil, err
-	}
-	return &creds, nil
-}
-
-func saveCredentials(creds *storedCredentials) error {
-	path := credentialsPath()
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(creds, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0600)
-}
-
-// mergeCredentials loads stored credentials into cfg only when
-// cfg does not already contain explicit auth settings and the
-// selected data source is not the public Earth Search endpoint.
-func mergeCredentials(cfg *Config) {
-	// If settings.json already has explicit auth, do not override with legacy credentials.
-	if cfg.Auth != nil && (cfg.Auth.ClientID != "" || cfg.Auth.Username != "" || cfg.Auth.GrantType != "") {
-		return
-	}
-	// Earth Search is public — do not inject stored credentials.
-	if cfg.STACURL == EarthSearchURL {
-		return
-	}
-	creds, err := loadCredentials()
-	if err != nil || creds == nil {
-		return
-	}
-	cfg.Auth = &AuthConfig{
-		ClientID:     creds.ClientID,
-		ClientSecret: creds.ClientSecret,
-	}
-}
-
 var stdinReader = bufio.NewReader(os.Stdin)
 
 func readLine(prompt string) string {
@@ -872,75 +776,71 @@ func readLine(prompt string) string {
 }
 
 func setupAuthWizard() {
-	fmt.Println("=== sentinel2-go Authentication Setup ===")
+	fmt.Println("=== sentinel2-go 认证配置 ===")
 	fmt.Println()
-	fmt.Println("Select your data source:")
-	fmt.Println("  1) Earth Search — no authentication required")
+	fmt.Println("选择数据源:")
+	fmt.Println("  1) Earth Search — 无需认证")
 	fmt.Println("  2) Copernicus Data Space Ecosystem (CDSE)")
-	fmt.Println("  3) Custom STAC API with OAuth2")
+	fmt.Println("  3) 自定义 STAC API")
 	fmt.Println()
 
-	choice := readLine("Choice [1-3]: ")
+	choice := readLine("选择 [1-3]: ")
 
 	switch choice {
 	case "1":
-		path := credentialsPath()
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "Failed to remove credentials: %v\n", err)
+		if err := os.Remove(settingsPath()); err != nil && !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "删除配置失败: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Println("\nCleared stored credentials.")
-		fmt.Println("Earth Search is the default and requires no authentication.")
+		fmt.Println("\n已清除配置。")
+		fmt.Println("Earth Search 为默认数据源，无需认证。")
 
 	case "2":
-		fmt.Println("\n--- CDSE Configuration ---")
-		fmt.Println("Get your OAuth credentials from:")
-		fmt.Println("  https://dataspace.copernicus.eu/ → Account Settings → OAuth Clients")
+		fmt.Println("\n--- CDSE 配置 ---")
+		fmt.Println("使用 CDSE 账号的用户名和密码进行认证。")
+		fmt.Println("访问 https://dataspace.copernicus.eu/ 注册账号。")
 		fmt.Println()
-		clientID := readLine("Client ID: ")
-		clientSecret := readLine("Client Secret: ")
-		if clientID == "" || clientSecret == "" {
-			fmt.Println("\nError: Client ID and Secret cannot be empty.")
+		username := readLine("邮箱（用户名）: ")
+		password := readLine("密码: ")
+		if username == "" || password == "" {
+			fmt.Println("\n错误: 用户名和密码不能为空。")
 			os.Exit(1)
 		}
-		if err := saveCredentials(&storedCredentials{ClientID: clientID, ClientSecret: clientSecret}); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to save credentials: %v\n", err)
+		settings := &Settings{
+			Source:     "cdse",
+			STACURL:    "https://stac.dataspace.copernicus.eu/v1",
+			Collection: "sentinel-2-l2a",
+			Auth:       &AuthConfig{Username: username, Password: password},
+		}
+		if err := saveSettings(settings); err != nil {
+			fmt.Fprintf(os.Stderr, "保存配置失败: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Printf("\nCredentials saved to: %s\n", credentialsPath())
-		fmt.Println("File permissions: 0600 (owner read/write only)")
-		fmt.Println()
-		fmt.Println("To use CDSE, update your config.json with:")
-		fmt.Println(`  {
-    "stac_url": "https://stac.dataspace.copernicus.eu/v1",
-    "collection": "sentinel-2-l2a"
-  }`)
+		fmt.Printf("\n配置已保存到: %s\n", settingsPath())
+		fmt.Println("文件权限: 0600（仅所有者可读写）")
 
 	case "3":
-		fmt.Println("\n--- Custom STAC Configuration ---")
-		stacURL := readLine("STAC API URL: ")
-		collection := readLine("Collection name: ")
-		clientID := readLine("Client ID: ")
-		clientSecret := readLine("Client Secret: ")
-		if clientID == "" || clientSecret == "" {
-			fmt.Println("\nError: Client ID and Secret cannot be empty.")
+		fmt.Println("\n--- 自定义 STAC API 配置 ---")
+		stacURL := readLine("STAC API 地址: ")
+		collection := readLine("Collection 名称: ")
+		if stacURL == "" || collection == "" {
+			fmt.Println("\n错误: 地址和名称不能为空。")
 			os.Exit(1)
 		}
-		if err := saveCredentials(&storedCredentials{ClientID: clientID, ClientSecret: clientSecret}); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to save credentials: %v\n", err)
+		settings := &Settings{
+			Source:     "custom",
+			STACURL:    stacURL,
+			Collection: collection,
+		}
+		if err := saveSettings(settings); err != nil {
+			fmt.Fprintf(os.Stderr, "保存配置失败: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Printf("\nCredentials saved to: %s\n", credentialsPath())
-		fmt.Println("File permissions: 0600 (owner read/write only)")
-		fmt.Println()
-		fmt.Println("To use this source, update your config.json with:")
-		fmt.Printf(`  {
-    "stac_url": "%s",
-    "collection": "%s"
-  }`+"\n", stacURL, collection)
+		fmt.Printf("\n配置已保存到: %s\n", settingsPath())
+		fmt.Println("文件权限: 0600（仅所有者可读写）")
 
 	default:
-		fmt.Println("\nInvalid choice. Please run again and select 1, 2, or 3.")
+		fmt.Println("\n无效选择，请重新运行并选择 1、2 或 3。")
 		os.Exit(1)
 	}
 }
@@ -1113,41 +1013,18 @@ const setupHTML = `<!DOCTYPE html>
         <h3>CDSE 账号设置</h3>
         <div class="steps">
           <p><strong>第 1 步：</strong>前往 <a href="https://dataspace.copernicus.eu/" target="_blank">dataspace.copernicus.eu</a> 注册账号，点击右上角用户图标 → REGISTER，填写信息后查收验证邮件完成验证。</p>
-          <p><strong>第 2 步：</strong>在下方选择认证方式并填写信息。</p>
+          <p><strong>第 2 步：</strong>在下方填写 CDSE 登录邮箱和密码。</p>
         </div>
 
         <div class="field">
-          <label>认证方式</label>
-          <select id="cdse-method" name="cdse_method" onchange="onCDSEMethodChange()">
-            <option value="password">用户名 + 密码（快速开始）</option>
-            <option value="oauth">OAuth Client Credentials（推荐）</option>
-          </select>
-          <p class="hint" id="password-hint">使用 CDSE 登录邮箱和密码，密码保存在本地。</p>
-          <p class="hint hidden" id="oauth-hint">在账号设置的 OAuth Clients 中创建，适合长期使用。</p>
+          <label>邮箱（用户名）</label>
+          <input type="text" name="cdse_username" placeholder="your@email.com">
         </div>
-
-        <div id="cdse-password">
-          <div class="field">
-            <label>邮箱（用户名）</label>
-            <input type="text" name="cdse_username" placeholder="your@email.com">
-          </div>
-          <div class="field">
-            <label>密码</label>
-            <input type="password" name="cdse_password" placeholder="CDSE 登录密码">
-          </div>
+        <div class="field">
+          <label>密码</label>
+          <input type="password" name="cdse_password" placeholder="CDSE 登录密码">
         </div>
-
-        <div id="cdse-oauth" class="hidden">
-          <div class="field">
-            <label>Client ID</label>
-            <input type="text" name="cdse_client_id" placeholder="your-client-id">
-          </div>
-          <div class="field">
-            <label>Client Secret</label>
-            <input type="password" name="cdse_client_secret" placeholder="your-client-secret">
-          </div>
-          <p class="hint">从 <a href="https://dataspace.copernicus.eu/" target="_blank">dataspace.copernicus.eu</a> 的账号设置 → OAuth Clients 获取</p>
-        </div>
+        <p class="hint">使用 CDSE 登录邮箱和密码，密码保存在本地。</p>
       </div>
     </div>
 
@@ -1160,14 +1037,6 @@ const setupHTML = `<!DOCTYPE html>
         <label>Collection 名称</label>
         <input type="text" name="collection" placeholder="SENTINEL-2">
       </div>
-      <div class="field">
-        <label>Client ID</label>
-        <input type="text" name="custom_client_id" placeholder="your-client-id">
-      </div>
-      <div class="field">
-        <label>Client Secret</label>
-        <input type="password" name="custom_client_secret" placeholder="your-client-secret">
-      </div>
     </div>
 
     <button type="submit">保存并继续</button>
@@ -1179,15 +1048,7 @@ function onSourceChange() {
   document.getElementById('cdse-box').classList.toggle('hidden', v !== 'cdse');
   document.getElementById('custom-box').classList.toggle('hidden', v !== 'custom');
 }
-function onCDSEMethodChange() {
-  const v = document.getElementById('cdse-method').value;
-  document.getElementById('cdse-password').classList.toggle('hidden', v !== 'password');
-  document.getElementById('cdse-oauth').classList.toggle('hidden', v !== 'oauth');
-  document.getElementById('password-hint').classList.toggle('hidden', v !== 'password');
-  document.getElementById('oauth-hint').classList.toggle('hidden', v !== 'oauth');
-}
 onSourceChange();
-onCDSEMethodChange();
 </script>
 </body>
 </html>`
@@ -1231,27 +1092,13 @@ func runSetupWizard() (*Settings, error) {
 			case "cdse":
 				settings.STACURL = "https://stac.dataspace.copernicus.eu/v1"
 				settings.Collection = "sentinel-2-l2a"
-				method := r.FormValue("cdse_method")
-				if method == "password" {
-					settings.Auth = &AuthConfig{
-						GrantType: "password",
-						Username:  strings.TrimSpace(r.FormValue("cdse_username")),
-						Password:  strings.TrimSpace(r.FormValue("cdse_password")),
-					}
-				} else {
-					settings.Auth = &AuthConfig{
-						GrantType:    "client_credentials",
-						ClientID:     strings.TrimSpace(r.FormValue("cdse_client_id")),
-						ClientSecret: strings.TrimSpace(r.FormValue("cdse_client_secret")),
-					}
+				settings.Auth = &AuthConfig{
+					Username: strings.TrimSpace(r.FormValue("cdse_username")),
+					Password: strings.TrimSpace(r.FormValue("cdse_password")),
 				}
 			case "custom":
 				settings.STACURL = strings.TrimSpace(r.FormValue("stac_url"))
 				settings.Collection = strings.TrimSpace(r.FormValue("collection"))
-				settings.Auth = &AuthConfig{
-					ClientID:     strings.TrimSpace(r.FormValue("custom_client_id")),
-					ClientSecret: strings.TrimSpace(r.FormValue("custom_client_secret")),
-				}
 			default:
 				http.Error(w, "Invalid source", http.StatusBadRequest)
 				return
@@ -1310,8 +1157,8 @@ func mergeSettings(cfg *Config) {
 			cfg.Collection = s.Collection
 		}
 	}
-	if cfg.Auth == nil || (cfg.Auth.ClientID == "" && cfg.Auth.Username == "") {
-		if s.Auth != nil && (s.Auth.ClientID != "" || s.Auth.Username != "") {
+	if cfg.Auth == nil || cfg.Auth.Username == "" {
+		if s.Auth != nil && s.Auth.Username != "" {
 			cfg.Auth = s.Auth
 		}
 	}
@@ -1348,20 +1195,10 @@ func main() {
 		os.Exit(1)
 	}
 	mergeSettings(cfg)
-	mergeCredentials(cfg)
 
 	var auth Authenticator = NoOpAuth{}
-	if cfg.Auth != nil {
-		switch cfg.Auth.GrantType {
-		case "password":
-			if cfg.Auth.Username != "" && cfg.Auth.Password != "" {
-				auth = NewPasswordAuth(cfg.Auth.Username, cfg.Auth.Password)
-			}
-		default:
-			if cfg.Auth.ClientID != "" {
-				auth = NewOAuth2Auth(cfg.Auth.ClientID, cfg.Auth.ClientSecret)
-			}
-		}
+	if cfg.Auth != nil && cfg.Auth.Username != "" && cfg.Auth.Password != "" {
+		auth = NewCDSEAuth(cfg.Auth.Username, cfg.Auth.Password)
 	}
 
 	opts := SearchOptions{
