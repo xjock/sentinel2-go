@@ -43,7 +43,8 @@
       "Bash(go run *)",
       "WebFetch(domain:earth-search.aws.element84.com)",
       "Bash(where pkENVIOptimizedLinear)",
-      "Bash(\"/d/Dev/toolchain/gdal353_msvc142_x64_v3/bin/pkENVIOptimizedLinear\" --help)"
+      "Bash(\"/d/Dev/toolchain/gdal353_msvc142_x64_v3/bin/pkENVIOptimizedLinear\" --help)",
+      "WebSearch"
     ]
   }
 }
