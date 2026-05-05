@@ -59,7 +59,8 @@
       "Bash(curl -s \"https://stac.dataspace.copernicus.eu/v1/search?collections=sentinel-2-l2a&bbox=116.2,39.8,116.6,40.0&datetime=2026-01-01T00:00:00Z/2026-01-15T23:59:59Z&limit=5\")",
       "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('Features:', len\\(d.get\\('features',[]\\)\\)\\); print\\('Type:', d.get\\('type'\\)\\)\")",
       "Bash(curl -s \"https://stac.dataspace.copernicus.eu/v1/search?collections=sentinel-2-l2a&bbox=116.2,39.8,116.6,40.0&datetime=2026-04-01T00:00:00Z/2026-04-15T23:59:59Z&limit=1\")",
-      "Bash(python3 -c ' *)"
+      "Bash(python3 -c ' *)",
+      "Bash(gofmt *)"
     ],
     "additionalDirectories": [
       "/tmp",

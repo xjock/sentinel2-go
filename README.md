@@ -4,7 +4,7 @@ A lightweight Go program to search and download Sentinel-2 L2A satellite imagery
 
 ## Features
 
-- **Multiple data sources**: Earth Search (public, no auth) or Copernicus Data Space Ecosystem (CDSE)
+- **Multiple data sources**: Earth Search (public, no auth), CDSE STAC (per-band), or CDSE OData (full-scene ZIP)
 - **Web setup wizard**: First run automatically opens a browser page for configuration
 - **Automatic band mapping**: Use friendly names like `red`, `green`, `blue` — automatically translated to provider-specific keys
 - **Resume support**: Skip already-downloaded files, resume interrupted downloads
@@ -50,7 +50,8 @@ If `~/.sentinel2-go/settings.json` does not exist, the program automatically sta
 | Option | Description | Authentication |
 |--------|-------------|----------------|
 | **Earth Search STAC API** | Public AWS-hosted STAC, no auth needed | None |
-| **CDSE** | Copernicus Data Space Ecosystem, official EU source | Username+Password |
+| **CDSE STAC API** | Copernicus Data Space Ecosystem, per-band COG download | Username+Password |
+| **CDSE OData API** | Copernicus Data Space Ecosystem, full-scene ZIP download | Username+Password |
 | **Custom STAC** | Any compatible STAC API endpoint | none |
 
 ### CDSE Setup Steps
@@ -61,6 +62,24 @@ If `~/.sentinel2-go/settings.json` does not exist, the program automatically sta
 4. Save and continue
 
 Settings are stored in `~/.sentinel2-go/settings.json` (permissions `0600`).
+
+### Data Source Comparison
+
+| Dimension | Earth Search STAC | CDSE STAC | CDSE OData |
+|-----------|-------------------|-----------|------------|
+| **Download granularity** | Per-band COG (50–200 MB/band) | Per-band COG (50–200 MB/band) | Full-scene ZIP (500 MB–1 GB+) |
+| **Authentication** | None | CDSE account required | CDSE account required |
+| **Speed** | Fast (AWS CloudFront CDN) | Medium (EU direct) | Slow (on-the-fly packaging + large files) |
+| **Access from China** | May require VPN | Likely accessible without VPN | Likely accessible without VPN |
+| **Best for** | Quick preview, on-demand bands, RGB composite | Official source, precise bands, no-VPN fallback | Complete original product package with metadata |
+| **Resume support** | Yes | Yes | Yes |
+| **RGB composite** | Auto | Auto | N/A (process after extracting ZIP) |
+
+**Recommendation:**
+
+- **Good network, want speed** → Earth Search STAC (default, fastest)
+- **Earth Search unreachable, or need official source** → CDSE STAC (per-band, faster than OData)
+- **Need complete product ZIP (all bands + metadata)** → CDSE OData (slow but complete)
 
 ### `settings.json` — Authentication
 
@@ -191,7 +210,9 @@ docker run --rm -v $(pwd)/config.json:/app/config.json -v $(pwd)/sentinel2_data:
 
 ## Output
 
-Downloaded files are named as:
+### STAC mode (Earth Search / CDSE STAC)
+
+Per-band downloads, file naming:
 ```
 sentinel2_data/
   S2A_50TMK_20250105_0_L2A_red.tif
@@ -200,14 +221,30 @@ sentinel2_data/
   ...
 ```
 
-For CDSE, the source files are JPEG 2000 (`.jp2`), but GDAL tools handle them transparently. RGB composites are built as 8-bit GeoTIFFs.
+CDSE STAC source files are JPEG 2000 (`.jp2`), but GDAL tools read them transparently. RGB composites are built as 8-bit GeoTIFFs.
+
+### OData mode (CDSE OData)
+
+Full-scene ZIP downloads, file naming:
+```
+sentinel2_data/
+  S2A_T50TMK_20250105T030529_MSIL2A.zip
+  ...
+```
+
+ZIP packages contain the complete product (all JP2 bands + XML metadata). Extract and process with SNAP, ENVI, etc. RGB composites are **not** auto-generated in OData mode.
 
 ## FAQ
 
+**Q: Which data source should I use?**
+- **Start with Earth Search**: fastest, AWS CloudFront global CDN, but may be unreachable from some networks
+- **If Earth Search fails** → switch to **CDSE STAC**: per-band downloads, smaller files, EU academic site likely accessible without VPN
+- **Need the complete original product package** → use **CDSE OData**: full-scene ZIP, slow but complete, also likely accessible without VPN
+
 **Q: Download fails / times out?**
-- Each file is approximately 50-200MB, download time depends on your network
-- Default timeout is 10 minutes
-- CDSE OData downloads may be slower than Earth Search COGs
+- Earth Search / CDSE STAC: each file is ~50-200MB, default timeout is 10 minutes
+- CDSE OData: full-scene ZIPs are typically 500MB–1GB+, single-file timeout is 30 minutes, recommend using on a stable network
+- If timeouts are frequent, increase `max_retries` in `config.json` (e.g., set to 3 or 5)
 
 **Q: No items returned?**
 - Check that your date range is within the available archive
@@ -215,11 +252,13 @@ For CDSE, the source files are JPEG 2000 (`.jp2`), but GDAL tools handle them tr
 - Try increasing `max_cloud` or removing the cloud filter
 - CDSE data availability may differ from Earth Search
 
-**Q: How do I switch from CDSE back to Earth Search?**
+**Q: How do I switch data sources?**
 ```bash
 ./sentinel2-go -setup
-# Select "Earth Search STAC API (no auth)" and save
+# Re-select a data source in the web wizard and save
 ```
+
+You can switch between Earth Search, CDSE STAC, and CDSE OData at any time via `-setup`. Already-downloaded files are never affected.
 
 **Q: Can I use custom STAC APIs?**
 Yes. In the setup wizard, choose "Custom STAC API" and provide your endpoint URL and collection name.
