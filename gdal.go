@@ -94,3 +94,36 @@ func BuildRGB(destDir string, itemID string) error {
 	fmt.Printf("  [rgb] %s  %s\n", rgbPath, bytePath)
 	return nil
 }
+
+// buildRGBByte 接受显式 R/G/B 波段路径，直接生成拉伸后的 byte 合成图。
+// 中间 VRT 写入 workDir，不产生独立的 _RGB.tif。
+func buildRGBByte(redPath, greenPath, bluePath, bytePath, workDir string) error {
+	vrtPath := filepath.Join(workDir, "rgb.vrt")
+	buildCmd := exec.Command(findGDALTool("gdalbuildvrt"),
+		"-separate", vrtPath, redPath, greenPath, bluePath)
+	buildCmd.Stdout = os.Stdout
+	buildCmd.Stderr = os.Stderr
+	buildCmd.Env = gdalEnv()
+	if err := buildCmd.Run(); err != nil {
+		return fmt.Errorf("gdalbuildvrt failed: %w", err)
+	}
+
+	args := []string{
+		"-ot", "Byte",
+		"-a_nodata", "0",
+		"-scale_1", "0", "3000", "1", "255",
+		"-scale_2", "0", "3000", "1", "255",
+		"-scale_3", "0", "3000", "1", "255",
+		vrtPath, bytePath,
+	}
+	fmt.Printf("  [cmd] %s %s\n", findGDALTool("gdal_translate"), strings.Join(args, " "))
+
+	byteCmd := exec.Command(findGDALTool("gdal_translate"), args...)
+	byteCmd.Stdout = os.Stdout
+	byteCmd.Stderr = os.Stderr
+	byteCmd.Env = gdalEnv()
+	if err := byteCmd.Run(); err != nil {
+		return fmt.Errorf("gdal_translate to byte failed: %w", err)
+	}
+	return nil
+}

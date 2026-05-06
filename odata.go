@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -336,6 +338,17 @@ func runODataFlow(cfg *Config, auth Authenticator, destDir string) {
 		}
 	}
 
+	fmt.Println("\n=== Processing RGB ===")
+	for _, p := range products {
+		zipPath := filepath.Join(destDir, p.Name+".zip")
+		if _, err := os.Stat(zipPath); err != nil {
+			continue
+		}
+		if err := processODataProduct(zipPath, destDir, p.Name); err != nil {
+			fmt.Fprintf(os.Stderr, "  [rgb skip] %s: %v\n", p.Name, err)
+		}
+	}
+
 	fmt.Println("\nDone.")
 	if failed > 0 {
 		fmt.Printf("%d downloads failed.\n", failed)
@@ -344,4 +357,98 @@ func runODataFlow(cfg *Config, auth Authenticator, destDir string) {
 	if skipped > 0 {
 		fmt.Printf("%d products were offline (LTA), skipped.\n", skipped)
 	}
+}
+
+// extractRGBJP2s 从 Sentinel-2 SAFE zip 包里只解压 R10m 的 B02/B03/B04 三个 jp2，
+// 返回 red、green、blue 三个本地路径（顺序：R=B04, G=B03, B=B02）。
+func extractRGBJP2s(zipPath, outDir string) (string, string, string, error) {
+	r, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return "", "", "", fmt.Errorf("open zip: %w", err)
+	}
+	defer r.Close()
+
+	var redEntry, greenEntry, blueEntry *zip.File
+	for _, f := range r.File {
+		name := f.Name
+		if !strings.Contains(name, "/IMG_DATA/R10m/") {
+			continue
+		}
+		base := path.Base(name)
+		switch {
+		case strings.HasSuffix(base, "_B04_10m.jp2"):
+			redEntry = f
+		case strings.HasSuffix(base, "_B03_10m.jp2"):
+			greenEntry = f
+		case strings.HasSuffix(base, "_B02_10m.jp2"):
+			blueEntry = f
+		}
+	}
+	if redEntry == nil || greenEntry == nil || blueEntry == nil {
+		return "", "", "", fmt.Errorf("missing R10m B02/B03/B04 in zip")
+	}
+
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		return "", "", "", fmt.Errorf("mkdir: %w", err)
+	}
+
+	extract := func(f *zip.File) (string, error) {
+		dst := filepath.Join(outDir, path.Base(f.Name))
+		src, err := f.Open()
+		if err != nil {
+			return "", fmt.Errorf("open entry %s: %w", f.Name, err)
+		}
+		defer src.Close()
+		w, err := os.Create(dst)
+		if err != nil {
+			return "", fmt.Errorf("create %s: %w", dst, err)
+		}
+		if _, err := io.Copy(w, src); err != nil {
+			w.Close()
+			return "", fmt.Errorf("write %s: %w", dst, err)
+		}
+		if err := w.Close(); err != nil {
+			return "", fmt.Errorf("close %s: %w", dst, err)
+		}
+		return dst, nil
+	}
+
+	redPath, err := extract(redEntry)
+	if err != nil {
+		return "", "", "", err
+	}
+	greenPath, err := extract(greenEntry)
+	if err != nil {
+		return "", "", "", err
+	}
+	bluePath, err := extract(blueEntry)
+	if err != nil {
+		return "", "", "", err
+	}
+	return redPath, greenPath, bluePath, nil
+}
+
+// processODataProduct 把整景 zip 解压出 R/G/B 波段，合成拉伸成 byte 格式 tif，
+// 然后清理所有中间文件，最终目录下只保留原始 .zip 和 *_byte.tif。
+func processODataProduct(zipPath, destDir, productName string) error {
+	bytePath := filepath.Join(destDir, productName+"_byte.tif")
+	if _, err := os.Stat(bytePath); err == nil {
+		fmt.Printf("  [skip] %s already exists\n", productName+"_byte.tif")
+		return nil
+	}
+
+	workDir := filepath.Join(destDir, productName+"_extract")
+	defer os.RemoveAll(workDir)
+
+	fmt.Printf("  [extract] %s -> R10m B02/B03/B04\n", productName)
+	redPath, greenPath, bluePath, err := extractRGBJP2s(zipPath, workDir)
+	if err != nil {
+		return fmt.Errorf("extract: %w", err)
+	}
+
+	if err := buildRGBByte(redPath, greenPath, bluePath, bytePath, workDir); err != nil {
+		return err
+	}
+	fmt.Printf("  [byte] %s\n", bytePath)
+	return nil
 }

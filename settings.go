@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"net"
 	"net/http"
 	"os"
@@ -22,7 +23,37 @@ func readLine(prompt string) string {
 	return strings.TrimSpace(line)
 }
 
+// hasSavedAuth 判断已有 settings 中是否保存了完整的用户名/密码。
+func hasSavedAuth(s *Settings) bool {
+	return s != nil && s.Auth != nil && s.Auth.Username != "" && s.Auth.Password != ""
+}
+
+// promptCredentials 询问用户名和密码。如果 existing 已有完整凭据，允许直接回车
+// 跳过两个输入以保持原值不变；否则强制输入两项非空。
+func promptCredentials(existing *Settings) (string, string) {
+	saved := hasSavedAuth(existing)
+	if saved {
+		fmt.Printf("已保存凭据：%s（直接回车保持不变）\n", existing.Auth.Username)
+	}
+	username := readLine("邮箱（用户名）: ")
+	password := readLine("密码: ")
+	if username == "" && password == "" {
+		if saved {
+			return existing.Auth.Username, existing.Auth.Password
+		}
+		fmt.Println("\n错误: 用户名和密码不能为空。")
+		os.Exit(1)
+	}
+	if username == "" || password == "" {
+		fmt.Println("\n错误: 用户名和密码必须同时提供。")
+		os.Exit(1)
+	}
+	return username, password
+}
+
 func setupAuthWizard() {
+	existing, _ := loadSettings()
+
 	fmt.Println("=== sentinel2-go 认证配置 ===")
 	fmt.Println()
 	fmt.Println("选择数据源:")
@@ -48,12 +79,7 @@ func setupAuthWizard() {
 		fmt.Println("按波段下载（red/green/blue/nir 等），支持断点续传和 RGB 合成。")
 		fmt.Println("访问 https://dataspace.copernicus.eu/ 注册账号。")
 		fmt.Println()
-		username := readLine("邮箱（用户名）: ")
-		password := readLine("密码: ")
-		if username == "" || password == "" {
-			fmt.Println("\n错误: 用户名和密码不能为空。")
-			os.Exit(1)
-		}
+		username, password := promptCredentials(existing)
 		settings := &Settings{
 			Source:     "cdse",
 			STACURL:    "https://stac.dataspace.copernicus.eu/v1",
@@ -72,12 +98,7 @@ func setupAuthWizard() {
 		fmt.Println("整景 ZIP 下载（包含所有波段和元数据），适合需要完整产品的场景。")
 		fmt.Println("访问 https://dataspace.copernicus.eu/ 注册账号。")
 		fmt.Println()
-		username := readLine("邮箱（用户名）: ")
-		password := readLine("密码: ")
-		if username == "" || password == "" {
-			fmt.Println("\n错误: 用户名和密码不能为空。")
-			os.Exit(1)
-		}
+		username, password := promptCredentials(existing)
 		settings := &Settings{
 			Source: "cdse_odata",
 			Auth:   &AuthConfig{Username: username, Password: password},
@@ -289,13 +310,13 @@ const setupHTML = `<!DOCTYPE html>
 
         <div class="field">
           <label>邮箱（用户名）</label>
-          <input type="text" name="cdse_username" placeholder="your@email.com">
+          <input type="text" name="cdse_username" placeholder="{{if .HasExistingAuth}}留空保持不变（{{.ExistingUsername}}）{{else}}your@email.com{{end}}">
         </div>
         <div class="field">
           <label>密码</label>
-          <input type="password" name="cdse_password" placeholder="CDSE 登录密码">
+          <input type="password" name="cdse_password" placeholder="{{if .HasExistingAuth}}留空保持不变{{else}}CDSE 登录密码{{end}}">
         </div>
-        <p class="hint">使用 CDSE 登录邮箱和密码，密码保存在本地。</p>
+        {{if .HasExistingAuth}}<p class="hint">已保存凭据：{{.ExistingUsername}}（两个输入框留空回车即可保持不变，只切换数据源）。</p>{{else}}<p class="hint">使用 CDSE 登录邮箱和密码，密码保存在本地。</p>{{end}}
       </div>
     </div>
 
@@ -342,7 +363,32 @@ const successHTML = `<!DOCTYPE html>
 </body>
 </html>`
 
+type setupPageData struct {
+	HasExistingAuth  bool
+	ExistingUsername string
+}
+
+var setupTmpl = template.Must(template.New("setup").Parse(setupHTML))
+
 func runSetupWizard() (*Settings, error) {
+	existing, _ := loadSettings()
+	saved := hasSavedAuth(existing)
+
+	resolveAuth := func(r *http.Request) (*AuthConfig, error) {
+		user := strings.TrimSpace(r.FormValue("cdse_username"))
+		pass := strings.TrimSpace(r.FormValue("cdse_password"))
+		if user == "" && pass == "" {
+			if saved {
+				return &AuthConfig{Username: existing.Auth.Username, Password: existing.Auth.Password}, nil
+			}
+			return nil, fmt.Errorf("用户名和密码不能为空")
+		}
+		if user == "" || pass == "" {
+			return nil, fmt.Errorf("用户名和密码必须同时提供")
+		}
+		return &AuthConfig{Username: user, Password: pass}, nil
+	}
+
 	done := make(chan *Settings, 1)
 
 	mux := http.NewServeMux()
@@ -363,15 +409,19 @@ func runSetupWizard() (*Settings, error) {
 			case "cdse":
 				settings.STACURL = "https://stac.dataspace.copernicus.eu/v1"
 				settings.Collection = "sentinel-2-l2a"
-				settings.Auth = &AuthConfig{
-					Username: strings.TrimSpace(r.FormValue("cdse_username")),
-					Password: strings.TrimSpace(r.FormValue("cdse_password")),
+				auth, err := resolveAuth(r)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
 				}
+				settings.Auth = auth
 			case "cdse_odata":
-				settings.Auth = &AuthConfig{
-					Username: strings.TrimSpace(r.FormValue("cdse_username")),
-					Password: strings.TrimSpace(r.FormValue("cdse_password")),
+				auth, err := resolveAuth(r)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
 				}
+				settings.Auth = auth
 			case "custom":
 				settings.STACURL = strings.TrimSpace(r.FormValue("stac_url"))
 				settings.Collection = strings.TrimSpace(r.FormValue("collection"))
@@ -391,7 +441,13 @@ func runSetupWizard() (*Settings, error) {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, setupHTML)
+		data := setupPageData{HasExistingAuth: saved}
+		if saved {
+			data.ExistingUsername = existing.Auth.Username
+		}
+		if err := setupTmpl.Execute(w, data); err != nil {
+			http.Error(w, "render failed", http.StatusInternalServerError)
+		}
 	})
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
