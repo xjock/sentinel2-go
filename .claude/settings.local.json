@@ -60,11 +60,14 @@
       "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('Features:', len\\(d.get\\('features',[]\\)\\)\\); print\\('Type:', d.get\\('type'\\)\\)\")",
       "Bash(curl -s \"https://stac.dataspace.copernicus.eu/v1/search?collections=sentinel-2-l2a&bbox=116.2,39.8,116.6,40.0&datetime=2026-04-01T00:00:00Z/2026-04-15T23:59:59Z&limit=1\")",
       "Bash(python3 -c ' *)",
-      "Bash(gofmt *)"
+      "Bash(gofmt *)",
+      "Bash(python3 -c 'import json,sys; d=json.load\\(sys.stdin\\); d[\"auth\"] = {\"username\": \"[redacted]\" if d.get\\(\"auth\"\\) else None, \"password\": \"[redacted]\" if d.get\\(\"auth\"\\) else None} if d.get\\(\"auth\"\\) else None; print\\(json.dumps\\(d, indent=2\\)\\)')",
+      "Bash(rm -f sentinel2_data/*_byte_renew.tif && ./sentinel2-go -config config.json -dest ./sentinel2_data 2>&1 | grep -E '\\\\[\\(cmd|reuse|renew|skip\\)\\\\]|Creating output|Done\\\\.')"
     ],
     "additionalDirectories": [
       "/tmp",
-      "/home/luca/.sentinel2-go"
+      "/home/luca/.sentinel2-go",
+      "/home/luca/dev/geos/sentinel2-scraper/sentinel2_data"
     ]
   }
 }

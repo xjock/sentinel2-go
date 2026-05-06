@@ -73,32 +73,47 @@ func (o *CDSEAuth) fetchToken(ctx context.Context) (string, error) {
 	data.Set("username", o.Username)
 	data.Set("password", o.Password)
 
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token", strings.NewReader(data.Encode()))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	const maxRetries = 3
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			wait := time.Duration(attempt) * time.Second
+			time.Sleep(wait)
+		}
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("token request failed: %w", err)
-	}
-	defer resp.Body.Close()
+		req, err := http.NewRequestWithContext(ctx, "POST", "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token", strings.NewReader(data.Encode()))
+		if err != nil {
+			return "", err
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	if resp.StatusCode != http.StatusOK {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("token request failed: %w", err)
+			continue
+		}
+
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("token endpoint returned %d: %s", resp.StatusCode, string(body))
-	}
+		resp.Body.Close()
 
-	var tr struct {
-		AccessToken string `json:"access_token"`
-		ExpiresIn   int    `json:"expires_in"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&tr); err != nil {
-		return "", fmt.Errorf("decode token response: %w", err)
-	}
+		if resp.StatusCode == http.StatusOK {
+			var tr struct {
+				AccessToken string `json:"access_token"`
+				ExpiresIn   int    `json:"expires_in"`
+			}
+			if err := json.Unmarshal(body, &tr); err != nil {
+				return "", fmt.Errorf("decode token response: %w", err)
+			}
+			o.token = tr.AccessToken
+			o.expiresAt = time.Now().Add(time.Duration(tr.ExpiresIn) * time.Second)
+			return o.token, nil
+		}
 
-	o.token = tr.AccessToken
-	o.expiresAt = time.Now().Add(time.Duration(tr.ExpiresIn) * time.Second)
-	return o.token, nil
+		lastErr = fmt.Errorf("token endpoint returned %d: %s", resp.StatusCode, string(body))
+		if resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests {
+			continue
+		}
+		break
+	}
+	return "", lastErr
 }

@@ -429,26 +429,45 @@ func extractRGBJP2s(zipPath, outDir string) (string, string, string, error) {
 }
 
 // processODataProduct 把整景 zip 解压出 R/G/B 波段，合成拉伸成 byte 格式 tif，
-// 然后清理所有中间文件，最终目录下只保留原始 .zip 和 *_byte.tif。
+// 再跑 gdal_trace_outline → gdalwarp -cutline → pkRenew 修复 nodata 像素，
+// 最终目录下保留原始 .zip 和 *_byte_renew.tif。renew 失败时回退保留 *_byte.tif。
 func processODataProduct(zipPath, destDir, productName string) error {
 	bytePath := filepath.Join(destDir, productName+"_byte.tif")
-	if _, err := os.Stat(bytePath); err == nil {
-		fmt.Printf("  [skip] %s already exists\n", productName+"_byte.tif")
+	renewPath := filepath.Join(destDir, productName+"_byte_renew.tif")
+
+	if _, err := os.Stat(renewPath); err == nil {
+		fmt.Printf("  [skip] %s already exists\n", filepath.Base(renewPath))
 		return nil
 	}
 
 	workDir := filepath.Join(destDir, productName+"_extract")
-	defer os.RemoveAll(workDir)
+	if err := os.MkdirAll(workDir, 0755); err != nil {
+		return fmt.Errorf("mkdir workDir: %w", err)
+	}
+	// defer os.RemoveAll(workDir)  // 调试期间保留中间文件
 
-	fmt.Printf("  [extract] %s -> R10m B02/B03/B04\n", productName)
-	redPath, greenPath, bluePath, err := extractRGBJP2s(zipPath, workDir)
-	if err != nil {
-		return fmt.Errorf("extract: %w", err)
+	if _, err := os.Stat(bytePath); err != nil {
+		fmt.Printf("  [extract] %s -> R10m B02/B03/B04\n", productName)
+		redPath, greenPath, bluePath, err := extractRGBJP2s(zipPath, workDir)
+		if err != nil {
+			return fmt.Errorf("extract: %w", err)
+		}
+		if err := buildRGBByte(redPath, greenPath, bluePath, bytePath, workDir); err != nil {
+			return err
+		}
+		fmt.Printf("  [byte] %s\n", bytePath)
+	} else {
+		fmt.Printf("  [reuse] %s, retrying renew\n", filepath.Base(bytePath))
 	}
 
-	if err := buildRGBByte(redPath, greenPath, bluePath, bytePath, workDir); err != nil {
-		return err
+	if err := renewByteTIFF(bytePath, renewPath, workDir); err != nil {
+		fmt.Fprintf(os.Stderr, "  [renew skip] %s: %v\n", productName, err)
+		return nil
 	}
-	fmt.Printf("  [byte] %s\n", bytePath)
+
+	// if err := os.Remove(bytePath); err != nil {
+	// 	fmt.Fprintf(os.Stderr, "  [warn] remove old byte tif: %v\n", err)
+	// }
+	fmt.Printf("  [renew] %s\n", filepath.Base(renewPath))
 	return nil
 }

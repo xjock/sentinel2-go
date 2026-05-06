@@ -1,90 +1,92 @@
 # Renew Pipeline 接入规划
 
-把 `gdal_trace_outline → gdalwarp -cutline → pkRenew` 接进三个模式（Earth Search、CDSE STAC、CDSE OData）的 RGB 合成末端，自动修复 `_byte.tif` 内部 nodata 像素。
+把 `gdal_trace_outline → gdalwarp -cutline → pkRenew` 接进 **OData 分支**的 RGB 合成末端，自动修复 `_byte.tif` 内部 nodata 像素，最终产物为 `*_byte_renew.tif`。
+
+> **范围（已锁定）**：本次只动 OData 分支（即 `processODataProduct` / `buildRGBByte` 这条链路），Earth Search 与 CDSE STAC 模式（`BuildRGB`）保持不动。
 
 ## 1. Pipeline 三步
 
-针对一个已生成的 `*_byte.tif`：
+针对一个已生成的 `<destDir>/<productName>_byte.tif`：
 
 ```sh
-# 1) 用 _byte.tif 自身的有效像素提取外轮廓（输出为 OGR 矢量文件）
-gdal_trace_outline <byte>.tif -out-cs en -ogr-out <outline>.geojson -ogr-fmt GeoJSON
+# 1) 用 _byte.tif 自身的有效像素提取外轮廓（Shapefile，显式 -ndv 0）
+gdal_trace_outline <byte>.tif -ndv 0 -out-cs en -ogr-out <outline>.shp
 
 # 2) 按轮廓裁掉外侧（轮廓外置 0），全尺寸输出
-gdalwarp -overwrite -cutline <outline>.geojson -dstnodata 0 <byte>.tif <masked>.tif
+gdalwarp -overwrite -cutline <outline>.shp -dstnodata 0 <byte>.tif <masked>.tif
 
-# 3) 在裁剪后的图上修复内部 nodata 像素
-pkRenew -recover-nodata <masked>.tif <renewed>.tif
+# 3) 在裁剪后的图上修复内部 nodata 像素，输出最终成品
+pkRenew -recover-nodata <masked>.tif <byte_renew>.tif
 
-# 4) 用 renewed 原地替换 byte，并清理 outline / masked / renewed 中间产物
-mv <renewed>.tif <byte>.tif
+# 4) 成功后：删除原 _byte.tif；删除 outline shapefile 全套伴生文件、masked.tif
 ```
 
 为何不需要「反贴」：
 
-- gdalwarp 把轮廓外的所有像素全设为 0
-- pkRenew 的修复条件是 `(r!=0 || g!=0 || b!=0) && 某波段==0`
+- `gdalwarp` 把轮廓外的所有像素全设为 0
+- `pkRenew` 的修复条件是 `(r!=0 || g!=0 || b!=0) && 某波段==0`
 - 轮廓外像素三波段全 0 → 不满足修复条件 → 不会被填充
 - 轮廓内像素正常按原逻辑修复
 
 ## 2. 代码层接入点
 
-只动 `gdal.go`，新增一个函数 + 在两个现有函数末尾各调用一次：
+只动两个文件：
 
-| 接入点 | 覆盖的模式 | 调用位置 |
-|---|---|---|
-| `BuildRGB` 末尾 | Earth Search、CDSE STAC | `_byte.tif` 生成完之后 |
-| `buildRGBByte` 末尾 | CDSE OData | byte 合成完之后 |
+| 文件 | 改动 |
+|---|---|
+| `gdal.go` | 新增 `renewByteTIFF(bytePath, outputPath, workDir) error` |
+| `odata.go` | `processODataProduct` 在 `buildRGBByte` 之后调用 `renewByteTIFF`，处理 skip-if-exists 与失败回退 |
 
-新函数签名：
+`BuildRGB`（Earth Search + CDSE STAC）**不动**。
 
-```go
-func renewByteTIFF(bytePath, workDir string) error
-```
+## 3. 文件命名 & 中间产物
 
-外部签名只暴露 byte 路径和 workDir，pipeline 全部封在内部。
+成品落到 `destDir`：
 
-> **时序提醒**：当前 `buildRGBByte` 还没被任何地方调用（OData 的「解压 zip → 调用 buildRGBByte」还在挂起），这次改完 OData 模式不会立刻生效，要等下一步把 OData 处理流程接上才会跑到 renew。
+- `<productName>_byte.tif`：合成结果，renew 成功后删除；renew 失败时保留
+- `<productName>_byte_renew.tif`：renew 后的最终成品
 
-## 3. 命名 & 中间文件管理
+中间产物落到 `workDir`（即 `<destDir>/<productName>_extract/`，处理结束 `os.RemoveAll`）：
 
-- 中间文件命名：以 `bytePath` 的 basename 派生，避免冲突
-  - `<base>_outline.geojson`
-  - `<base>_masked.tif`
-  - `<base>_renew.tif`
-- 写在 `workDir` 下（`BuildRGB` 传 `destDir`，`buildRGBByte` 传它已有的 `workDir` 参数）
-- 三个中间文件全部 `defer os.Remove(...)`（renew 那个在成功 rename 后变成 ENOENT，无影响）
-- 最终 `os.Rename(renewedPath, bytePath)` **原地替换** `_byte.tif`
+- `<productName>_byte_outline.shp/.shx/.dbf/.prj/.cpg`
+- `<productName>_byte_masked.tif`
 
-## 4. 错误处理策略
+## 4. skip-if-exists 行为
+
+`processODataProduct` 入口：
+
+| 既有文件 | 行为 |
+|---|---|
+| 已有 `_byte_renew.tif` | 整个步骤跳过 |
+| 仅有 `_byte.tif`（上次 renew 失败） | 复用 `_byte.tif`，重跑 renew，不重新解压 |
+| 都没有 | 走完整流程：解压 → buildRGBByte → renewByteTIFF |
+
+## 5. 错误处理（最终）
 
 renew 是「锦上添花」步骤，不应该让主流程失败：
 
-- 任一步失败（`gdal_trace_outline` / `gdalwarp` / `pkRenew` 缺失或返回非零）→ 打印 `[renew skip] <id>: <err>`，**保留原始 `_byte.tif`**（只在最后一步 rename 才动 byte），继续下一个 item
-- 成功 → 打印 `[renew] <basename>`
-- `BuildRGB` / `buildRGBByte` 自身仍然返回 `nil`（不把 renew 错误向上传播）
+- `gdal_trace_outline` / `gdalwarp` / `pkRenew` 任一步失败（缺失或非零退出）→ 打印 `[renew skip] <productName>: <err>`，**保留原始 `_byte.tif`**，不生成 `_byte_renew.tif`，`processODataProduct` 仍返回 `nil`
+- 成功 → 打印 `[renew] <productName>_byte_renew.tif`，并 `os.Remove(原 _byte.tif)`
 
-## 5. 待确认决策点
+## 6. 决策点（已锁定）
 
-| # | 决策点 | 倾向 | 备选 |
-|---|---|---|---|
-| A | outline 文件格式 | **GeoJSON**（单文件，cleanup 简单） | Shapefile（4–5 个伴生文件）/ WKT（gdalwarp `-cutline` 不一定能直接吃裸 WKT 文件，dans-gdal-scripts 的 `-wkt-out` 输出的是裸文本，要稳妥还是走 OGR 矢量） |
-| B | renew 后是否原地替换 `_byte.tif` | **是**（OData 模式之前明确「最后只保留 zip 包和 _byte.tif」，三个模式保持一致） | 保留两份：`_byte.tif` + `_byte_renew.tif` |
-| C | 失败行为 | **降级警告，保留原 `_byte.tif`** | 失败即视作整个 RGB 步骤失败 |
-| D | 工具是否走 `findGDALTool` 查 `.exe` | 是，复用现有逻辑（Windows 模式找当前目录 + DLL，Linux 走 PATH） | 直接 `exec.Command("pkRenew", ...)` 不查 .exe |
-| E | 命令名大小写 | `gdal_trace_outline`、`pkRenew`（dans-gdal-scripts / pktools 习惯） | 环境里如果叫 `pkrenew`（小写）需要告知 |
-| F | `gdal_trace_outline` 的 `-ndv` 参数 | 不显式加（依赖 `_byte.tif` 自带 `-a_nodata 0` 元数据） | 显式加 `-ndv 0` 更保险 |
-| G | 是否一并把 OData 的解压+合成流程也接上 | 这次只加 renew，OData 解压留到下次 | 这次一起做完 |
+| # | 决策点 | 结论 |
+|---|---|---|
+| A | outline 文件格式 | **Shapefile**（默认 driver 输出，全部伴生文件随后清理） |
+| B | 最终落盘文件 | **只保留 `_byte_renew.tif`**（renew 成功后删除 `_byte.tif`） |
+| C | 失败行为 | **降级警告，保留原 `_byte.tif`** |
+| D | 工具查找 | **复用 `findGDALTool`**（Windows 当前目录 + DLL 检测，Linux 走 PATH） |
+| E | 命令名 | `gdal_trace_outline`、`pkRenew` |
+| F | `gdal_trace_outline` 的 `-ndv` | **显式加 `-ndv 0`** |
+| G | 范围 | **只对 OData 分支做 renew**，BuildRGB 不动 |
 
-需要拍板的是 **A、B、E、G**。其余按倾向执行即可。
+## 7. 影响面 & 验证
 
-## 6. 影响面 & 验证
+- 改动文件：`gdal.go`（新增 1 个函数）、`odata.go`（修改 `processODataProduct`）
+- 影响：仅 OData 分支生成的 `_byte_renew.tif` 内部 nodata 被修复，外侧 nodata 仍保持
+- 验证：`go build ./...`、`go vet ./...`，再用一个 OData 产品跑通看 `[renew]` 日志和最终文件
 
-- 改动文件：`gdal.go`（新增 1 个函数，在 2 处末尾追加调用）
-- 影响：所有三个模式生成的 `_byte.tif` 在 renew 后内部 nodata 会被修复，外侧 nodata 仍保持
-- 验证：`go build ./...`、`go vet ./...`，再用一个测试 item 跑通看 `[renew]` 日志和最终文件
-
-## 7. 工具依赖
+## 8. 工具依赖
 
 | 工具 | 来源 | 必需性 |
 |---|---|---|
